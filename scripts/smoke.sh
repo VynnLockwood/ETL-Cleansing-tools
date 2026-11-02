@@ -30,11 +30,28 @@ check_postgres() {
   done
 }
 
+check_web() {
+  local i tries=${SMOKE_RETRIES:-30} body code
+  for ((i = 0; i < tries; i++)); do
+    curl -fs http://localhost/ >/dev/null 2>&1 && break
+    sleep 1
+  done
+  body=$(curl -fs http://localhost/) || fail "GET / failed"
+  case "$body" in *SPP*) ok "GET / contains SPP" ;; *) fail "GET / missing SPP" ;; esac
+  body=$(curl -fs http://localhost/api/healthz) || fail "GET /api/healthz failed"
+  [ "$body" = '{"status":"ok"}' ] || fail "healthz body: $body"
+  ok "GET /api/healthz"
+  code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost/api/imports/00000000-0000-0000-0000-000000000000)
+  [ "$code" = "401" ] || fail "unauthenticated /api/imports returned $code, want 401"
+  ok "unauthenticated /api/imports is 401"
+}
+
 sections=("$@")
 [ ${#sections[@]} -eq 0 ] && sections=(postgres)
 for s in "${sections[@]}"; do
   case "$s" in
     postgres) check_postgres ;;
+    web) check_web ;;
     *) fail "unknown section $s" ;;
   esac
 done
