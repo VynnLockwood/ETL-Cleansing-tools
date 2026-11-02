@@ -77,3 +77,50 @@ def make_config(url: str, tmp_path, reader: bool = True) -> Config:
 def client_for(url: str, tmp_path, reader: bool = True):
     with TestClient(create_app(make_config(url, tmp_path, reader))) as client:
         yield client
+
+
+SMALL_DATA_SQL = """
+INSERT INTO spp.a VALUES (1, 'A1'), (2, 'A2');
+INSERT INTO spp.b VALUES (10, 1, 'b-10'), (11, 1, 'b-11'), (12, 2, 'b-12');
+INSERT INTO spp.c VALUES (100, 10, 'note-100');
+INSERT INTO spp.d VALUES (1, 1, 'info-11');
+INSERT INTO spp.e VALUES (5, 1, 1);
+INSERT INTO spp."MixedCase" VALUES (1, 'm');
+INSERT INTO spp."we""ird" VALUES (1, 1, 'cv');
+INSERT INTO spp.nokey VALUES ('nk1'), ('nk2');
+"""
+
+
+def make_small_data(url: str) -> str:
+    make_small_schema(url)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(SMALL_DATA_SQL)
+    return url
+
+
+def mk_graph(tables, edges, pks=None):
+    """Pure SchemaGraph for resolver/planner tests.
+
+    tables: {name: [columns]}; edges: [(name, child, child_cols, parent, parent_cols, one_to_one)];
+    pks: {table: [pk columns]}
+    """
+    from app.usecases.graph import Column, Edge, SchemaGraph, Table
+
+    pks = pks or {}
+    ts = {
+        n: Table(
+            n,
+            tuple(Column(c, "text", c in pks.get(n, []), False) for c in cols),
+            tuple(pks.get(n, [])),
+            (),
+        )
+        for n, cols in tables.items()
+    }
+    es = tuple(Edge(nm, ch, pa, tuple(cc), tuple(pc), o) for nm, ch, cc, pa, pc, o in edges)
+    return SchemaGraph(ts, es)
+
+
+def F(table, column):
+    from app.usecases.models import FieldRef
+
+    return FieldRef(table=table, column=column)
