@@ -1,42 +1,45 @@
 # Handoff: SPP stack and Excel import
 
-Date: 2026-11-02. Branch: `design/spp-service-spec`.
+Date: 2026-11-02. Branch: `feat/frontend-nginx-superset`.
 
 ## Where things stand
 
-- Spec: `docs/superpowers/specs/2026-11-02-spp-service-design.md` (approved).
-- Plan: `docs/superpowers/plans/2026-11-02-spp-stack-and-excel-import.md` (approved, 13 tasks).
-- Task 1 (compose skeleton, Postgres roles/databases, `scripts/smoke.sh postgres`): done, reviewed, committed.
-- Task 2 (Go API skeleton): drafted but **not reviewed and not verified**. It is committed as a separate `wip:` commit. It has no `go.sum` and no dependencies because the sandbox could not download Go modules. Treat it as a starting point: run `go mod tidy`, run the tests (RED/GREEN), finish the missing parts, then review.
-  - Still missing from Task 2: `api` service in `docker-compose.yml`, `.env.example` additions (`MIGRATE_DATABASE_URL`, `DATABASE_URL`, `ADMIN_PASSWORD`), `docker compose config` check, integration test run.
-- Tasks 3 to 13: not started.
+- Backend is **Python / FastAPI** (psycopg 3, openpyxl, pytest). Tasks 1 to 15 of the plan are implemented on this branch.
+- The branch is based on `master` at `c4d949d`, which holds another agent's Go API commit. This branch deliberately deletes that Go code, so merging requires resolving `api/` (keep the Python version).
+- Spec: `docs/superpowers/specs/2026-11-02-spp-service-design.md` (approved, implemented). Plan: `docs/superpowers/plans/2026-11-02-spp-stack-and-excel-import.md`.
+- The rulings made during execution and the per-task review history are in `docs/superpowers/sdd-ledger.md`.
 
-## Why it stopped
+## What was verified
 
-The sandbox network policy blocked `proxy.golang.org` and `sum.golang.org`, so pgx v5 and golang-migrate could not be downloaded, and there was no Docker daemon. Run the remaining work somewhere with Go module access and Docker.
+- 238 pytest tests (244 after the final review fixes) pass with `-W error` against a local PostgreSQL 16.
+- `scripts/e2e.py` was run twice against the real `docs/data-dict-spp.xlsx` with a local uvicorn and the local Postgres 16: 58 tables created, 15 accepted foreign keys created, data load works, and a primary-key violation rolls the whole load back.
 
-## Rulings made while preparing execution (the plan text does not say these; apply them)
+## Never run
 
-1. `Config.MigrateDatabaseURL` (env `MIGRATE_DATABASE_URL`) is optional and defaults to `DatabaseURL`.
-2. Migration 0003 gives `spp_api` a persistent `CREATE` on schema `spp`. "No DDL outside the import transaction" is enforced by code path (only `Apply` issues DDL), not by privilege.
-3. Migration 0003 also sets `ALTER DEFAULT PRIVILEGES FOR ROLE spp_api IN SCHEMA spp GRANT SELECT ON TABLES TO spp_reader`, otherwise Superset cannot read imported tables.
-4. All proposal structs (`ColumnProfile`, `TableProfile`, `ForeignKey`, `TableProposal`, `Proposal`) get lowerCamel JSON tags (`sqlType`, `foreignKeys`, `addAudit`, `primaryKey`, `unmatched`, `accepted`, `source`).
-5. `Proposal` gains `SchemaOnly bool` (`schemaOnly`). `ParseDictionary` sets it; `Apply` creates tables but loads no rows when it is set (dictionary sheets hold column definitions, not data).
-6. Dictionary PK rule: column named `<table>ID`, else the first column if its name ends in `ID` and its type is uuid. Rows with empty Table or Column are skipped.
-7. A dictionary FK whose target table is absent from the dictionary (the `mt*` masters) is reported as an Issue and kept with `Accepted=false`.
-8. Boolean inference: a column is boolean only if every non-null value is `true` or `false` (case-insensitive). Columns of `0`/`1` infer integer.
-9. **Known gap, not solved:** `Apply` skips already-existing tables and loads no data into them (spec: new tables only). So "import the dictionary first, then a data workbook" creates the schema but does not load rows. A follow-up is needed to load data into existing tables.
+- `docker compose up`, the image builds, nginx routing.
+- The Superset image and `superset/bootstrap.sh`.
+- Every `scripts/smoke.sh` section, except `e2e.py` against a local uvicorn (not through nginx).
 
-## Deferred minor review findings
+## Known limitations and deferred hardening
 
-- `postgres/init/01-roles.sh` passes passwords through `psql -v` (visible in `ps` inside the container).
-- Role password changes in `.env` are not applied to existing roles; document in the README (Task 13).
-- `scripts/smoke.sh postgres` can still race during a cold start unless the stack is started with `docker compose up -d --wait`; document in the README (Task 13).
+- A job stuck in `applying` after a crash needs a manual `UPDATE` (see README).
+- A NUL character in a PUT proposal gives a 500.
+- Formula cells without a cached value read as empty.
+- Integer cells with more than 4300 digits are not handled.
+- The existing-table check uses `information_schema` instead of `pg_catalog`.
+- No advisory lock for concurrent imports.
+- The frontend buttons can be double-submitted.
+- No application-level upload size cap.
+- The Superset smoke check only verifies that the SPP database exists.
+- Uploaded files are never deleted.
 
-## Not verified anywhere
+## Not built
 
-`docker compose up`, nginx routing, Superset startup and every `scripts/smoke.sh` section other than `postgres` were never run (no Docker daemon).
+- Spec section 5: use-case ERD / view builder.
+- Spec section 7: `/schema`, `/usecases`, `/projects`, `/partners`.
+- Celery (decided against; imports run in the request).
+- User accounts (single admin password only).
 
 ## How the work was run
 
-Subagent-driven development: one implementer per task, then a spec and quality review, then a scoped re-review after any fixes. A copy of the progress ledger is saved next to this file as `sdd-ledger.md`.
+Subagent-driven development: one implementer per task, then spec and quality reviews, then a scoped re-review after fixes, then a final whole-branch review. The progress ledger is `sdd-ledger.md` next to this file.

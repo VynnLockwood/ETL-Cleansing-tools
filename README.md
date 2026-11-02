@@ -25,7 +25,7 @@ docker compose up -d --build --wait
 | `http://localhost/api/healthz` | API health check |
 | `http://localhost/superset/` | Superset (`SUPERSET_ADMIN_USER` / `SUPERSET_ADMIN_PASSWORD` from `.env`) |
 
-The API uses HTTP Basic auth as `admin` with `ADMIN_PASSWORD`; only `/healthz` is open.
+The API uses HTTP Basic auth as `admin` with `ADMIN_PASSWORD`; only `/healthz` is open (the interactive API docs pages `/docs`, `/redoc` and `/openapi.json` are disabled).
 
 ## Import flow
 
@@ -42,7 +42,7 @@ pip install -r requirements-dev.txt
 TEST_DATABASE_URL=postgresql://spp_owner:PASSWORD@HOST:5432/spp python -m pytest -q -W error
 ```
 
-The database tests drop and recreate the `spp`, `app` and `usecase` schemas, so point them at a throwaway database. They skip when `TEST_DATABASE_URL` is unset. The URL must connect as the owner role (`spp_owner`).
+The database tests drop and recreate the `spp`, `app` and `usecase` schemas, so point them at a throwaway database. They skip when `TEST_DATABASE_URL` is unset. The URL must connect as the owner role (`spp_owner`). Some tests also connect as the `spp_api` and `spp_reader` roles with the same host, port and database; their passwords default to `apipw` and `readerpw` and can be set with `TEST_SPP_API_PASSWORD` and `TEST_SPP_READER_PASSWORD`.
 
 ### Smoke and end-to-end checks
 
@@ -63,6 +63,7 @@ The e2e check can be re-run on the same stack: it applies the dictionary (tables
 
 ## Notes
 
+- The API gets its database passwords as separate variables (`SPP_API_PASSWORD`, `SPP_OWNER_PASSWORD`; optional `SPP_DB_HOST`, `SPP_DB_PORT`, `SPP_DB_NAME`, `SPP_API_USER`, `SPP_OWNER_USER`), so they may contain any characters such as `/` or `%` and need no URL encoding. `DATABASE_URL` / `MIGRATE_DATABASE_URL` still work as explicit overrides.
 - The role passwords in `.env` only take effect on a fresh Postgres volume. Changing them later does not change the existing roles; use `ALTER ROLE` or recreate the volume (`docker compose down -v` deletes all data).
 - Superset reads with `spp_reader` (SELECT only, including on tables created later).
 - Imported tables are owned by `spp_api`.

@@ -1,7 +1,7 @@
 # SPP Database Service: Design
 
 Date: 2026-11-02
-Status: Draft for review
+Status: Approved; implemented (see docs/superpowers/HANDOFF.md)
 
 ## 1. Purpose
 
@@ -40,7 +40,7 @@ Docker Compose, one internal network, only nginx publishes a port (80).
 | api | Python backend (FastAPI, REST, JSON) | Runs migrations at startup |
 | postgres | PostgreSQL 16 | Databases `spp` and `superset_meta`, created by init script |
 | superset | Apache Superset | Served under `/superset` via `SUPERSET_APP_ROOT`; reads `spp` read-only |
-| redis | Superset cache and Celery broker | Not used by the API |
+| redis | Superset cache (no Celery in v1) | Not used by the API |
 
 Startup order: postgres healthy, then api (migrates) and superset (`db upgrade`, admin user, `init`), then nginx. Secrets live in `.env` (not in git), with a committed `.env.example`. Postgres and Superset use named volumes.
 
@@ -101,7 +101,9 @@ Authentication in version 1: one admin login (shared secret from `.env`) for the
 docker-compose.yml   .env.example   README.md
 nginx/        nginx.conf
 postgres/     init/            (create roles and databases)
-api/          cmd/, internal/{imports,schema,usecase,superset,db}, migrations/, Dockerfile
+api/          app/{config,db,main,auth}.py, app/migrations/*.sql,
+              app/imports/{models,workbook,infer,keys,dictionary,ddl,apply,load,router}.py,
+              tests/, Dockerfile
 frontend/     index.html and small JS, Dockerfile
 superset/     superset_config.py, bootstrap.sh, Dockerfile
 docs/         superpowers/specs/, data-dict-spp.xlsx
