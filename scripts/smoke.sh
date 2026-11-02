@@ -8,8 +8,18 @@ PSQL_CMD=${PSQL_CMD:-docker compose exec -T postgres psql -U postgres -tA}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
 
+wait_postgres() {
+  local i tries=${SMOKE_RETRIES:-30}
+  for ((i = 0; i < tries; i++)); do
+    [ "$($PSQL_CMD -c 'SELECT 1' 2>/dev/null)" = "1" ] && return 0
+    sleep 1
+  done
+  fail "postgres not reachable"
+}
+
 check_postgres() {
   local r d
+  wait_postgres
   for r in spp_owner spp_api spp_reader superset; do
     [ "$($PSQL_CMD -c "SELECT 1 FROM pg_roles WHERE rolname='$r'")" = "1" ] || fail "role $r missing"
     ok "role $r"
