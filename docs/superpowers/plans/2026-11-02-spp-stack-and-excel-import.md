@@ -269,20 +269,22 @@ superset/Dockerfile  superset/superset_config.py  superset/bootstrap.sh
 - [ ] **Step 4: Run** `docker compose up -d --build && scripts/smoke.sh` — Expected: all sections PASS.
 - [ ] **Step 5: Commit** `feat: superset behind nginx with read-only spp connection`.
 
-### Task 13: End-to-end check and README
+### Task 13: End-to-end check, hardening leftovers and README
 
 **Files:**
-- Create: `README.md`
-- Modify: `scripts/smoke.sh` (section `e2e`)
+- Create: `scripts/e2e.py`, `README.md`
+- Modify: `scripts/smoke.sh` (section `e2e` calls `python3 scripts/e2e.py`), `api/requirements.txt`, `api/requirements-dev.txt`, `api/Dockerfile`, `docs/superpowers/specs/2026-11-02-spp-service-design.md` (section 11 only)
 
 **Interfaces:**
-- Consumes: everything. Produces: documented one-command start and a repeatable end-to-end check.
+- Consumes: everything. Produces: a repeatable end-to-end check that runs against any base URL, pinned dependencies, a non-root API image and the README.
+- `scripts/e2e.py` uses only the Python standard library (urllib, json, uuid, io, zipfile for a minimal xlsx writer if `openpyxl` is missing — otherwise use openpyxl) and reads `E2E_API_BASE` (default `http://localhost/api`), `ADMIN_PASSWORD` (env, or parsed from `.env`), `PSQL_CMD` (optional, same convention as `scripts/smoke.sh`) and exits non-zero with a clear message on the first failed assertion.
 
-- [ ] **Step 1: Add failing e2e check.** `scripts/smoke.sh e2e` uploads `docs/data-dict-spp.xlsx` in dictionary mode, asserts the response lists the validation issues described in spec section 11 (at least the `documentDate` boolean in `sppDocProcExtendScod`), deletes the flagged tables from the proposal via `PUT`, applies, and asserts `spp.sppProject` exists with a foreign key to `sppBusinessPartner`; then queries it as `spp_reader` through Superset's SQL API and as `spp_reader` in `psql` asserting `INSERT` is denied.
-- [ ] **Step 2: Run** `scripts/smoke.sh e2e` — Expected: FAIL until all earlier tasks are in place; then PASS.
-- [ ] **Step 3: Write `README.md`:** prerequisites, `cp .env.example .env`, `docker compose up -d --build`, URLs (`/`, `/superset/`), how to run tests (`python -m pytest` in `api/` with `TEST_DATABASE_URL`, `scripts/smoke.sh`), and the known dictionary issues from spec section 11.
-- [ ] **Step 4: Run** `docker compose down -v && docker compose up -d --build && scripts/smoke.sh` — Expected: all sections PASS.
-- [ ] **Step 5: Commit** `docs: readme and end-to-end smoke check`.
+- [ ] **Step 1: Write the e2e script and make it fail first.** Steps it performs, in order, each with an assertion: (1) `POST /imports` with `docs/data-dict-spp.xlsx` in dictionary mode returns 201, `proposal.schemaOnly` is true, the proposal contains tables `sppProject`, `sppProjectAddition`, `sppProjectConnection`, `sppProjectAddress`, `sppBusinessPartner`, and the issues include the boolean `documentDate` problem of `sppDocProcExtendScod`; (2) `sppProject` has an accepted foreign key to `sppBusinessPartner`; (3) apply the proposal — if `generate_ddl` rejects the full real dictionary (cycles or duplicate columns), the script makes the minimal documented edits through `PUT /imports/{id}/proposal` (for example setting `accepted=false` on a cycle-causing FK or dropping a table) and prints each edit; apply returns 200 and `created` lists the tables; (4) with `PSQL_CMD` set, check `spp."sppProject"` exists, has a foreign key constraint to `sppBusinessPartner`, and `spp_reader` has `SELECT` on it (`has_table_privilege`); (5) applying the same proposal again returns 409 (already applied) and a second upload+apply of the same file reports every table in `skipped`; (6) `POST /loads` with a small data workbook (a `sppProject` sheet listed BEFORE its parent `sppBusinessPartner` sheet, two rows each, only PK/FK/code columns filled) returns 200 with `rowsLoaded` equal to the row counts; (7) the same load again returns 422 with a primary-key violation issue and counts are unchanged; (8) every route returns 401 without credentials and `GET /healthz` is open.
+- [ ] **Step 2: Run it against a locally started API** (no Docker here): start `uvicorn app.main:create_app --factory --port 8081` from `api/` with `DATABASE_URL`/`MIGRATE_DATABASE_URL`/`ADMIN_PASSWORD`/`UPLOAD_DIR` pointing at the local test Postgres, run `E2E_API_BASE=http://localhost:8081 python3 scripts/e2e.py`; paste the real output in the report. Whatever real-dictionary problems it exposes (cycles, DDL errors, misaligned types) are findings: report them precisely.
+- [ ] **Step 3: Wire `smoke.sh e2e`** (and include it in the no-argument run after `web`, before `superset`).
+- [ ] **Step 4: Hardening leftovers.** Pin `api/requirements*.txt` to the exact versions installed and tested here (`pip freeze`-style for the direct dependencies only); make `api/Dockerfile` run as a non-root user with `/data/uploads` created and owned by it (the compose `uploads` volume mounts there).
+- [ ] **Step 5: Write `README.md`:** what it is, prerequisites (Docker only), `cp .env.example .env` + edit secrets, `docker compose up -d --build --wait`, URLs (`/`, `/api/healthz`, `/superset/`), the import flow (dictionary first, then data via "Load data"), how to run tests (`cd api && TEST_DATABASE_URL=… python -m pytest`), `scripts/smoke.sh` sections, notes (role passwords in `.env` only apply on a fresh volume; Superset reads with `spp_reader`; imported tables are owned by `spp_api`), known limitations (job stuck in `applying` after a crash needs a manual `UPDATE`, no user accounts, no Celery) and the known dictionary issues. Update spec section 11: the `mt*` masters ARE defined on the dictionary's `Master` sheet except `mtVoltageLevel` and `mtZone`.
+- [ ] **Step 6: Run** `cd api && python -m pytest -q -W error` (with `TEST_DATABASE_URL`) and `bash -n scripts/smoke.sh` — Expected: PASS. **Commit** `feat: end-to-end check, pinned deps, non-root image and README`.
 
 ### Task 14: Load data into existing tables
 
