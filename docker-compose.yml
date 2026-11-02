@@ -26,5 +26,23 @@ services:
       timeout: 3s
       retries: 20
 
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://spp_api:${SPP_API_PASSWORD}@postgres:5432/spp
+      MIGRATE_DATABASE_URL: postgresql://spp_owner:${SPP_OWNER_PASSWORD}@postgres:5432/spp
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set in .env}
+      UPLOAD_DIR: /data/uploads
+      ADDR: ":8080"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  uploads:
