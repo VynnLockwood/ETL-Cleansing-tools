@@ -268,3 +268,42 @@ def test_reapply_clears_stale_apply_issues_but_keeps_upload_issues(client, cfg):
     got = client.get(f"/imports/{job['id']}").json()
     assert got["status"] == "applied"
     assert got["issues"] == job["issues"]
+
+
+def test_issue_with_nul_byte_is_stored_without_crash(client, cfg, monkeypatch):
+    from app.imports import router
+    from app.imports.models import ApplyResult, Issue
+
+    job = upload(client, people_xlsx()).json()
+    bad = Issue(sheet="pe\x00ople", column="id", row=2, message="bad\x00value")
+    monkeypatch.setattr(
+        router, "apply_import", lambda pool, p, wb: ApplyResult(created=[], skipped=[], issues=[bad])
+    )
+    r = client.post(f"/imports/{job['id']}/apply")
+    assert r.status_code == 422
+    assert "\x00" not in json.dumps(r.json())
+    got = client.get(f"/imports/{job['id']}").json()
+    assert got["status"] == "failed"
+    assert got["issues"][0]["message"] == "badvalue"
+
+
+def test_job_not_left_applying_when_recording_result_fails(client, cfg, monkeypatch):
+    from app.imports import router
+
+    job = upload(client, people_xlsx()).json()
+
+    def boom(*a, **k):
+        raise RuntimeError("cannot record")
+
+    monkeypatch.setattr(router, "_store_issues", boom)
+    monkeypatch.setattr(
+        router, "apply_import", lambda pool, p, wb: (_ for _ in ()).throw(ValueError("x"))
+    )
+    with pytest.raises(RuntimeError, match="cannot record"):
+        client.post(f"/imports/{job['id']}/apply")
+    monkeypatch.undo()
+    got = client.get(f"/imports/{job['id']}").json()
+    assert got["status"] == "failed"
+    assert [i["message"] for i in got["issues"]] == [
+        "could not record the apply result: RuntimeError"
+    ]

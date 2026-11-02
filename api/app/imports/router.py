@@ -2,6 +2,7 @@
 
 import io
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.imports.keys import detect_keys
 from app.imports.models import Issue, Proposal
 from app.imports.workbook import read_workbook
 
+log = logging.getLogger(__name__)
 _EDITABLE = ("proposed", "failed")
 
 
@@ -39,7 +41,7 @@ def _store_issues(conn, job_id: uuid.UUID, issues: list[Issue], stage: str = "up
         cur.executemany(
             'INSERT INTO app.import_issue (job_id, sheet, "column", row, message, stage) '
             "VALUES (%s, %s, %s, %s, %s, %s)",
-            [(job_id, i.sheet, i.column, i.row, i.message, stage) for i in issues],
+            [(job_id, i.sheet, i.column, i.row, i.message, stage) for i in map(_clean_issue, issues)],
         )
 
 
@@ -50,6 +52,29 @@ def _load_issues(conn, job_id: uuid.UUID) -> list[dict]:
         (job_id,),
     ).fetchall()
     return [{"sheet": r[0], "column": r[1], "row": r[2], "message": r[3]} for r in rows]
+
+
+def _clean(text: str) -> str:
+    """Postgres text cannot hold NUL characters."""
+    return text.replace("\x00", "")
+
+
+def _clean_issue(i: Issue) -> Issue:
+    return Issue(sheet=_clean(i.sheet), column=_clean(i.column), row=i.row, message=_clean(i.message))
+
+
+def _fail_job(pool, jid: uuid.UUID, exc: BaseException) -> None:
+    """Best effort: record a generic failure so the job never stays 'applying'."""
+    try:
+        with pool.connection() as conn, conn.transaction():
+            conn.execute(
+                "INSERT INTO app.import_issue (job_id, sheet, \"column\", row, message, stage) "
+                "VALUES (%s, '', '', 0, %s, 'apply')",
+                (jid, f"could not record the apply result: {type(exc).__name__}"),
+            )
+            conn.execute("UPDATE app.import_job SET status = 'failed' WHERE id = %s", (jid,))
+    except Exception:
+        log.exception("could not mark import %s as failed", jid)
 
 
 def _issue(message: str) -> Issue:
@@ -195,20 +220,23 @@ def build_router(admin: Callable) -> APIRouter:
             issues = [_issue("The uploaded file is missing")]
         except ValueError as e:  # includes pydantic.ValidationError
             issues = [_issue(f"Invalid proposal: {e}")]
-        except BaseException:
-            # Never leave the job stuck in 'applying' on an unexpected error.
-            with pool.connection() as conn:
-                conn.execute("UPDATE app.import_job SET status = 'failed' WHERE id = %s", (jid,))
+        except BaseException as e:
+            _fail_job(pool, jid, e)
             raise
 
+        issues = [_clean_issue(i) for i in issues]
         failed = bool(issues) or result is None
-        with pool.connection() as conn, conn.transaction():
-            if failed:
-                _store_issues(conn, jid, issues, stage="apply")
-            conn.execute(
-                "UPDATE app.import_job SET status = %s WHERE id = %s",
-                ("failed" if failed else "applied", jid),
-            )
+        try:
+            with pool.connection() as conn, conn.transaction():
+                if failed:
+                    _store_issues(conn, jid, issues, stage="apply")
+                conn.execute(
+                    "UPDATE app.import_job SET status = %s WHERE id = %s",
+                    ("failed" if failed else "applied", jid),
+                )
+        except BaseException as e:
+            _fail_job(pool, jid, e)
+            raise
         if failed:
             return JSONResponse(status_code=422, content={"issues": _issues_json(issues)})
         return JSONResponse(content=result.model_dump(by_alias=True, mode="json"))
