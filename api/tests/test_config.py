@@ -67,3 +67,40 @@ def test_components_require_passwords():
         load_config({"SPP_OWNER_PASSWORD": "o", "ADMIN_PASSWORD": "pw"})
     with pytest.raises(ConfigError):
         load_config({"SPP_API_PASSWORD": "a", "ADMIN_PASSWORD": "pw"})
+
+
+def test_reader_url_from_components():
+    from psycopg.conninfo import conninfo_to_dict
+
+    cfg = load_config(
+        {
+            "SPP_API_PASSWORD": "a",
+            "SPP_OWNER_PASSWORD": "o",
+            "SPP_READER_PASSWORD": "r/ead er",
+            "ADMIN_PASSWORD": "pw",
+        }
+    )
+    d = conninfo_to_dict(cfg.reader_database_url)
+    assert d["user"] == "spp_reader"
+    assert d["password"] == "r/ead er"
+    assert d["dbname"] == "spp"
+    assert cfg.preview_limit == 50
+    assert cfg.preview_timeout_ms == 5000
+
+
+def test_reader_url_optional():
+    cfg = load_config(
+        {"SPP_API_PASSWORD": "a", "SPP_OWNER_PASSWORD": "o", "ADMIN_PASSWORD": "pw"}
+    )
+    assert cfg.reader_database_url == ""
+
+
+def test_reader_database_url_override():
+    cfg = load_config(
+        {
+            "DATABASE_URL": "postgresql://x",
+            "READER_DATABASE_URL": "postgresql://reader@h/db",
+            "ADMIN_PASSWORD": "pw",
+        }
+    )
+    assert cfg.reader_database_url == "postgresql://reader@h/db"

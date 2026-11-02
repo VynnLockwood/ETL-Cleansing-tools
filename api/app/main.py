@@ -16,11 +16,15 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         db.migrate(cfg.migrate_database_url)
         pool = db.open_pool(cfg.database_url)
+        reader_pool = db.open_pool(cfg.reader_database_url) if cfg.reader_database_url else None
         app.state.pool = pool
+        app.state.reader_pool = reader_pool
         app.state.cfg = cfg
         try:
             yield
         finally:
+            if reader_pool is not None:
+                reader_pool.close()
             pool.close()
 
     app = FastAPI(

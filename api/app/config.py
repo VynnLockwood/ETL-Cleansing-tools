@@ -15,6 +15,9 @@ class Config:
     migrate_database_url: str
     admin_password: str
     upload_dir: str
+    reader_database_url: str = ""
+    preview_limit: int = 50
+    preview_timeout_ms: int = 5000
 
 
 def _conninfo(env: Mapping[str, str], user_var: str, user_default: str, password_var: str) -> str:
@@ -46,9 +49,13 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
             migrate_database_url = database_url
         else:
             migrate_database_url = _conninfo(env, "SPP_OWNER_USER", "spp_owner", "SPP_OWNER_PASSWORD")
+    reader_database_url = env.get("READER_DATABASE_URL", "")
+    if not reader_database_url and env.get("SPP_READER_PASSWORD"):
+        reader_database_url = _conninfo(env, "SPP_READER_USER", "spp_reader", "SPP_READER_PASSWORD")
     return Config(
         database_url=database_url,
         migrate_database_url=migrate_database_url,
         admin_password=admin_password,
         upload_dir=env.get("UPLOAD_DIR") or "/data/uploads",
+        reader_database_url=reader_database_url,
     )
