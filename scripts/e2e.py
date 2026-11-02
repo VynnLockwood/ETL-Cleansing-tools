@@ -159,9 +159,16 @@ def main():
     print("== (3) apply")
     code, res = prepare_and_apply(body)
     check(code == 200, f"apply returns 200 (got {code}: {res if code != 200 else ''})")
-    check(len(res["created"]) == len(proposal["tables"]) and set(res["created"]) == table_names
-          and not res["skipped"] and not res["issues"],
-          f"created lists all {len(table_names)} tables of the proposal")
+    created, skipped = set(res["created"]), set(res["skipped"])
+    check(not res["issues"] and created | skipped == table_names and not created & skipped
+          and len(res["created"]) + len(res["skipped"]) == len(table_names),
+          f"created + skipped is exactly the {len(table_names)} proposal tables, no overlap, no issues")
+    if not skipped:
+        print(f"  schema created: {len(created)} tables")
+    elif not created:
+        print(f"  schema already present: all {len(skipped)} tables skipped (re-run)")
+    else:
+        print(f"  schema partly present: {len(created)} created, {len(skipped)} skipped")
     cols = {t["name"]: {c["name"] for c in t["columns"]} for t in proposal["tables"]}
     expected_fks = sum(1 for f in proposal["foreignKeys"] if f["accepted"] and f["table"] in cols
                        and f["refTable"] in cols and f["column"] in cols[f["table"]]
@@ -207,7 +214,9 @@ def main():
     check(any("duplicate key" in i["message"] or "primary key" in i["message"].lower() or "pkey" in i["message"]
               for i in res["issues"]), f"issue reports a primary-key violation ({res['issues'][:1]})")
     if PSQL_CMD:
-        check(counts() == before, f"row counts unchanged ({before})")
+        check(counts() == before, f"row counts unchanged by the failed load ({before})")
+    else:
+        print("skip: PSQL_CMD not set, row count check skipped")
 
     print("== (8) authentication")
     probe = "00000000-0000-0000-0000-000000000000"

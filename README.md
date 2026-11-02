@@ -59,7 +59,7 @@ scripts/smoke.sh postgres web    # chosen sections only
 | `superset` | `/superset/health`, admin login, database `SPP` exists |
 
 `scripts/e2e.py` uses only the Python standard library and can target any base URL: `E2E_API_BASE` (default `http://localhost/api`), `ADMIN_PASSWORD` (environment or `.env`), and optionally `PSQL_CMD` for the database assertions. `scripts/smoke.sh e2e` passes its own `PSQL_CMD` plus `-d spp` to the script; run on its own, the script needs `PSQL_CMD` to include `-d spp`, for example `PSQL_CMD="docker compose exec -T postgres psql -U postgres -tA -d spp"`.
-The e2e check writes rows with fixed codes `E2E-1`/`E2E-2` and creates the dictionary tables, so run it on a fresh stack, not on one holding real data.
+The e2e check can be re-run on the same stack: it applies the dictionary (tables that already exist are skipped) and loads rows with random UUID keys, so runs do not collide. Each run leaves 4 data rows behind (2 in `sppBusinessPartner`, 2 in `sppProject`). It also creates the dictionary tables if they are missing, so do not point it at a stack whose `spp` schema holds other data you care about.
 
 ## Notes
 
