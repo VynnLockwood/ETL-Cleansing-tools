@@ -65,3 +65,10 @@ class Proposal(CamelModel):
     foreign_keys: list[ForeignKey]
     add_audit: bool = False
     schema_only: bool = False
+
+
+class ApplyResult(CamelModel):
+    created: list[str]
+    skipped: list[str]
+    issues: list[Issue]
+    rows_loaded: dict[str, int] = {}
