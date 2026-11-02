@@ -1,6 +1,7 @@
 """Fixed, deterministic recommendation rules for fields that cannot be reached."""
 
 import re
+import time
 from collections.abc import Sequence
 
 import psycopg
@@ -34,14 +35,23 @@ def _type_of(table: Table, column: str) -> str:
     return next(c.sql_type for c in table.columns if c.name == column)
 
 
-def _count(pool: ConnectionPool, timeout_ms: int, holder: str, hcol: str, key: str, kcol: str):
-    """(non-null values of holder.hcol, how many of them exist in key.kcol) or None on error."""
+def _count(
+    pool: ConnectionPool, timeout_ms: int, holder: str, hcol: str, key: str, kcol: str, same_type: bool
+):
+    """(matched, total) for holder.hcol against key.kcol, or None when the query fails or times out."""
+    left = sql.SQL("k.{kc}").format(kc=sql.Identifier(kcol))
+    right = sql.SQL("h.{hc}").format(hc=sql.Identifier(hcol))
+    cond = (
+        sql.SQL("{} = {}").format(left, right)
+        if same_type
+        else sql.SQL("{}::text = {}::text").format(left, right)
+    )
     query = sql.SQL(
         "SELECT count(h.{hc}), count(*) FILTER (WHERE h.{hc} IS NOT NULL AND EXISTS"
-        " (SELECT 1 FROM {kt} AS k WHERE k.{kc}::text = h.{hc}::text)) FROM {ht} AS h"
+        " (SELECT 1 FROM {kt} AS k WHERE {cond})) FROM {ht} AS h"
     ).format(
         hc=sql.Identifier(hcol),
-        kc=sql.Identifier(kcol),
+        cond=cond,
         kt=sql.Identifier("spp", key),
         ht=sql.Identifier("spp", holder),
     )
@@ -53,24 +63,39 @@ def _count(pool: ConnectionPool, timeout_ms: int, holder: str, hcol: str, key: s
         return None
 
 
-def _key_match(pool, graph: SchemaGraph, reached: set[str], unreachable: str, timeout_ms: int):
-    """Best foreign-key suggestion that would connect `unreachable` to the reached tables."""
+def _key_match(
+    pool, graph: SchemaGraph, used: set[str], unreachable: str, timeout_ms: int, deadline: float
+):
+    """Best foreign-key suggestion that would connect `unreachable` to the tables the use case uses.
+
+    Returns (best or None, incomplete). `incomplete` is true when some candidate could not be
+    checked (timeout, error, or the time budget ran out)."""
     u = graph.tables[unreachable]
     pairs: list[tuple[str, str, str, str]] = []  # holder, column, key table, key column
-    for r in sorted(reached):
+    for r in sorted(used):
         rt = graph.tables[r]
         if len(rt.pk) == 1:
             for c in u.columns:
-                if c.name not in u.pk and _family(c.sql_type) == _family(_type_of(rt, rt.pk[0])):
+                if c.name not in u.pk and not c.is_fk and _family(c.sql_type) == _family(
+                    _type_of(rt, rt.pk[0])
+                ):
                     pairs.append((unreachable, c.name, r, rt.pk[0]))
         if len(u.pk) == 1:
             for c in rt.columns:
-                if c.name not in rt.pk and _family(c.sql_type) == _family(_type_of(u, u.pk[0])):
+                if c.name not in rt.pk and not c.is_fk and _family(c.sql_type) == _family(
+                    _type_of(u, u.pk[0])
+                ):
                     pairs.append((r, c.name, unreachable, u.pk[0]))
     best = None
+    incomplete = False
     for holder, col, key, kcol in pairs:
-        counted = _count(pool, timeout_ms, holder, col, key, kcol)
+        if time.monotonic() > deadline:
+            incomplete = True
+            break
+        same = _type_of(graph.tables[holder], col) == _type_of(graph.tables[key], kcol)
+        counted = _count(pool, timeout_ms, holder, col, key, kcol, same)
         if counted is None:
+            incomplete = True
             continue
         matched, total = counted
         name_ok = key.lower() in col.lower()
@@ -79,7 +104,7 @@ def _key_match(pool, graph: SchemaGraph, reached: set[str], unreachable: str, ti
         rank = (not name_ok, -matched, holder, col, key, kcol)
         if best is None or rank < best[0]:
             best = (rank, holder, col, key, kcol, matched, total)
-    return best
+    return best, incomplete
 
 
 def recommend(
@@ -90,8 +115,14 @@ def recommend(
     timeout_ms: int,
 ) -> list[Recommendation]:
     recs: list[Recommendation] = []
-    reached = set(resolution.paths)
     ok_tables = {s.field.table for s in resolution.fields if s.status == "ok"}
+    # Tables the use case actually uses: start, field tables and the tables on their paths.
+    used = {resolution.start} | ok_tables
+    for s in resolution.fields:
+        if s.status == "ok":
+            used |= {t for step in s.path.steps for t in (step.from_table, step.to_table)}
+    used &= set(graph.tables)
+    deadline = time.monotonic() + 4 * timeout_ms / 1000
     first_unreachable = {}
     for s in resolution.fields:
         if s.status == "unreachable":
@@ -99,7 +130,7 @@ def recommend(
     touched = {e.child for e in graph.edges} | {e.parent for e in graph.edges}
 
     for table, field in sorted(first_unreachable.items()):
-        found = _key_match(pool, graph, reached, table, timeout_ms)
+        found, incomplete = _key_match(pool, graph, used, table, timeout_ms, deadline)
         if found:
             _, holder, col, key, kcol, matched, total = found
             msg = f"Add a foreign key {holder}.{col} -> {key}.{kcol}. "
@@ -113,6 +144,8 @@ def recommend(
             a, b = _type_of(t1, col), _type_of(t2, kcol)
             if a != b:
                 msg += f" Align the column types first ({a} vs {b})."
+            if incomplete:
+                msg += " Not every column could be checked (time limit), so a better key may exist."
             recs.append(
                 Recommendation(
                     code="NO_PATH_KEY_MATCH", severity="error", message=msg, table=table,
@@ -120,15 +153,26 @@ def recommend(
                     evidence=Evidence(matched=matched, total=total),
                 )
             )
+        elif incomplete:
+            recs.append(
+                Recommendation(
+                    code="NO_PATH_KEY_MATCH", severity="warning", table=table, field=field,
+                    message=(
+                        f"Could not check every column of the tables around {table} for a matching key"
+                        " (time limit); no key was confirmed. Try again, or check the data by hand."
+                    ),
+                )
+            )
         t = graph.tables[table]
-        if not t.pk and not t.unique_sets:
+        holds_key = bool(found) and found[1] == table
+        if not t.pk and not t.unique_sets and not holds_key:
             recs.append(
                 Recommendation(
                     code="NO_PRIMARY_KEY", severity="error", table=table, field=field,
                     message=f"Table {table} has no primary key or unique key, so nothing can point to it. Define one.",
                 )
             )
-        if not found and table not in touched:
+        if not found and not incomplete and table not in touched:
             recs.append(
                 Recommendation(
                     code="ISOLATED_TABLE", severity="error", table=table, field=field,
@@ -141,7 +185,12 @@ def recommend(
 
     for table in sorted(ok_tables):
         for c in graph.tables[table].columns:
-            if _MT_COLUMN.match(c.name) and not c.is_fk and c.name not in graph.tables:
+            if (
+                _MT_COLUMN.match(c.name)
+                and not c.is_fk
+                and not c.is_pk
+                and not any(c.name.startswith(t) for t in graph.tables if _MT_COLUMN.match(t))
+            ):
                 recs.append(
                     Recommendation(
                         code="MISSING_TABLE", severity="warning", table=table,

@@ -119,7 +119,8 @@ def conn(clean_db):
 
 def run(conn, spec, graph, limit=50):
     cur = conn.execute(compose(spec, graph, limit))
-    return [d.name for d in cur.description], cur.fetchall()
+    assert [d.name for d in cur.description] == [f"c{i}" for i in range(len(spec.select))]
+    return [it.alias for it in spec.select], cur.fetchall()
 
 
 def graph_of(conn):

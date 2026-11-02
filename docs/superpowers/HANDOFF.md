@@ -5,12 +5,12 @@ Date: 2026-11-02. The stack and import were built on `feat/frontend-nginx-supers
 ## Use case checker (spec `2026-11-02-use-case-checker-design.md`, plan `2026-11-02-use-case-checker.md`)
 
 - Built: migration `0005`, reader pool, catalog graph, use case CRUD, resolver, query planner, read-only preview, six recommendation rules, test endpoint with ERD data, the page `frontend/usecases.html` (+ `erd.js`), an e2e step, README section.
-- Verified: 346 pytest tests (`-W error`) and 7 `node --test` tests; `scripts/e2e.py` run twice in a row against the real dictionary schema on a local Postgres 16; the page was driven in real Chromium (Playwright) against the real API: connect, build a 4-field use case, test, ERD, query tabs, delete, wrong password.
+- Verified: 354 pytest tests (`-W error`) and 7 `node --test` tests; `scripts/e2e.py` run twice in a row against the real dictionary schema on a local Postgres 16; the page was driven in real Chromium (Playwright) against the real API: connect, build a 4-field use case, test, ERD, query tabs, delete, wrong password.
 - Never run: `docker compose up` with this branch (compose only gained `SPP_READER_PASSWORD` for the `api` service; checked with `docker compose config`), nginx routing of `/usecases.html` (the frontend image now copies `usecases.html` and `erd.js`).
 - Finding on your data: columns `sppBusinessPartner.mtTypeEntity`, `mtAccountClass`, `mtTitle`, `mtGender`, `mtStatusMarital`, `mtTypeLegalEntity` have no foreign key and no table of that name (reported as `MISSING_TABLE`), besides `mtZone` and `mtVoltageLevel`. `sppProjectAddress.sppProject` has no foreign key to `sppProject`, so the address table is unreachable from a project (suggested key shown).
-- Decisions beyond the spec are in `docs/superpowers/sdd-ledger.md` of the use case run (rulings), summarised in the pull request description.
+- Decisions beyond the spec (rulings) and the deferred minor items are in `docs/superpowers/sdd-ledger-use-case-checker.md`.
 - Not built (spec section 2, later): path pinning, "one record" key filter, what-if test of a suggested key, schema-change regression, publish as a Superset dataset, draft mode without tables.
-- Deferred minor items are listed in the pull request description.
+- The earlier stack/import ledger is `docs/superpowers/sdd-ledger.md`.
 
 ## Earlier work: stack and Excel import
 

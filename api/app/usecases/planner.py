@@ -127,11 +127,13 @@ def compose(spec: QuerySpec, graph: SchemaGraph, limit: int) -> sql.Composed:
                 sql.Identifier("spp", step.to_table), new, cond
             )
         )
+    # Positional output names (c0, c1, ...): Postgres cuts names at 63 bytes, and "table.column"
+    # of real schemas is longer. The readable names are `SelectItem.alias`, in the same order.
     columns = sql.SQL(", ").join(
         sql.SQL("{}.{} AS {}").format(
-            alias[it.table], sql.Identifier(it.column), sql.Identifier(it.alias)
+            alias[it.table], sql.Identifier(it.column), sql.Identifier(f"c{i}")
         )
-        for it in spec.select
+        for i, it in enumerate(spec.select)
     )
     return sql.SQL("SELECT {} FROM {} AS {}{} LIMIT {}").format(
         columns,

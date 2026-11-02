@@ -225,3 +225,90 @@ def test_real_dictionary_address_suggestion(clean_db):
     )
     assert r.evidence == Evidence(matched=0, total=0)
     assert any("mtZone" in m.message for m in by_code(recs, "MISSING_TABLE"))
+
+
+# ---- final review fixes ---------------------------------------------------------------
+
+
+def test_timed_out_evidence_is_reported_not_ignored(make, monkeypatch):
+    from app.usecases import recommend as rec_mod
+
+    e = make(PROJ_ADDR + "INSERT INTO spp.addr VALUES (1, 1, 1, 'x');", FIELDS)
+    monkeypatch.setattr(rec_mod, "_count", lambda *a, **k: None)  # every evidence query fails
+    recs = e.recs()
+    assert "ISOLATED_TABLE" not in codes(recs)
+    [r] = by_code(recs, "NO_PATH_KEY_MATCH")
+    assert r.severity == "warning" and r.fix is None and "time limit" in r.message
+
+
+def test_partial_timeout_is_mentioned_on_the_suggestion(make, monkeypatch):
+    from app.usecases import recommend as rec_mod
+
+    e = make(PROJ_ADDR + "INSERT INTO spp.addr VALUES (1, 1, 1, 'x'), (2, 2, 2, 'y');", FIELDS)
+    real = rec_mod._count
+    calls = {"n": 0}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real(*a, **k)
+
+    monkeypatch.setattr(rec_mod, "_count", flaky)
+    [r] = by_code(e.recs(), "NO_PATH_KEY_MATCH")
+    assert r.severity == "error" and r.fix is not None
+    assert "time limit" in r.message
+
+
+def test_evidence_only_for_tables_the_use_case_uses(make, monkeypatch):
+    from app.usecases import recommend as rec_mod
+
+    sql = PROJ_ADDR + """
+CREATE TABLE spp.ext (id int PRIMARY KEY, proj_id int REFERENCES spp.addr (id), v int);
+INSERT INTO spp.addr VALUES (1, 1, 1, 'x');
+"""
+    e = make(sql, FIELDS, start="addr")  # ext is connected to addr but the use case never reads it
+    assert "ext" in e.res.paths
+    seen = []
+    real = rec_mod._count
+    monkeypatch.setattr(rec_mod, "_count", lambda pool, t, holder, hc, key, kc, same: (
+        seen.append((holder, key)), real(pool, t, holder, hc, key, kc, same))[1])
+    e.recs()
+    assert seen and all("ext" not in pair for pair in seen)
+
+
+def test_foreign_key_columns_are_not_offered_as_new_keys(make):
+    sql = """
+CREATE TABLE spp.proj (id int PRIMARY KEY, code text);
+CREATE TABLE spp.other (id int PRIMARY KEY);
+CREATE TABLE spp.addr (id int PRIMARY KEY, proj_ref int REFERENCES spp.other (id), city text);
+INSERT INTO spp.proj VALUES (1, 'P1'), (2, 'P2');
+INSERT INTO spp.other VALUES (1), (2);
+INSERT INTO spp.addr VALUES (1, 1, 'x'), (2, 2, 'y');
+"""
+    e = make(sql, FIELDS)
+    recs = e.recs()
+    assert "NO_PATH_KEY_MATCH" not in codes(recs) and "ISOLATED_TABLE" in codes(recs)
+
+
+def test_missing_table_ignores_lookup_tables_own_columns(make):
+    sql = 'CREATE TABLE spp."mtFuel" ("mtFuelID" text PRIMARY KEY, "mtFuelName" text, "mtFuelCode" text);'
+    e = make(sql, [F("mtFuel", "mtFuelName")])
+    assert by_code(e.recs(), "MISSING_TABLE") == []
+
+
+def test_missing_table_ignores_primary_key_columns(make):
+    e = make('CREATE TABLE spp.other2 ("mtKey" int PRIMARY KEY, v text);', [F("other2", "v")])
+    assert by_code(e.recs(), "MISSING_TABLE") == []
+
+
+def test_no_primary_key_not_reported_when_that_table_holds_the_key(make):
+    sql = """
+CREATE TABLE spp.proj (id int PRIMARY KEY, code text);
+CREATE TABLE spp.addr_nopk (proj_ref int, city text);
+INSERT INTO spp.proj VALUES (1, 'P1'), (2, 'P2');
+INSERT INTO spp.addr_nopk VALUES (1, 'x'), (2, 'y');
+"""
+    e = make(sql, [F("proj", "code"), F("addr_nopk", "city")], start="proj")
+    recs = e.recs()
+    [r] = by_code(recs, "NO_PATH_KEY_MATCH")
+    assert r.fix.table == "addr_nopk"
+    assert "NO_PRIMARY_KEY" not in codes(recs)

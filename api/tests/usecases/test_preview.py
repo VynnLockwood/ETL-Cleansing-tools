@@ -116,3 +116,19 @@ def test_permission_denied_becomes_error(env):
     denied, fine = run_preview(pool, g, sp, 50, 5000)
     assert "permission denied" in denied.error and denied.rows == []
     assert fine.error is None and len(fine.rows) == 3
+
+
+def test_long_column_names_are_not_truncated_or_merged(env):
+    url, _, pool = env
+    table = "t" * 45
+    col1 = "c" * 25 + "_first"
+    col2 = "c" * 25 + "_second"  # "table.column" is over 63 bytes and the first 63 bytes are equal
+    with psycopg.connect(url, autocommit=True) as c:
+        c.execute(f'CREATE TABLE spp."{table}" (id int PRIMARY KEY, "{col1}" text, "{col2}" text)')
+        c.execute(f"INSERT INTO spp.\"{table}\" VALUES (1, 'one', 'two')")
+        g = load_graph(c)
+    assert len(f"{table}.{col1}".encode()) > 63
+    [r] = run_preview(pool, g, specs(g, [F(table, col1), F(table, col2)]), 50, 5000)
+    assert r.error is None
+    assert r.columns == [f"{table}.{col1}", f"{table}.{col2}", f"{table}.id"]
+    assert r.rows == [["one", "two", 1]]

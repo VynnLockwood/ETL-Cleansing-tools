@@ -93,7 +93,7 @@
 <script>
 "use strict";
 var SVGNS = "http://www.w3.org/2000/svg";
-var state = { tables: [], useCases: [], current: null };
+var state = { tables: [], useCases: [], current: null, dirty: false };
 
 function $(id) { return document.getElementById(id); }
 
@@ -166,11 +166,13 @@ function fail(res, what) {
   renderIssues($("issues"), d && d.issues);
 }
 
-// Disable the button while a request runs, so a double click cannot send it twice.
-function busy(button, work) {
-  button.disabled = true;
-  return work().then(function (v) { button.disabled = false; return v; },
-    function (e) { button.disabled = false; setStatus("Request failed: " + e.message, true); });
+// Disable every action button while a request runs, so Save and Test cannot both send a request.
+var ACTIONS = ["connect", "newUc", "save", "test", "delete"];
+function setBusy(on) { ACTIONS.forEach(function (id) { $(id).disabled = on; }); }
+function busy(work) {
+  setBusy(true);
+  return work().then(function (v) { setBusy(false); return v; },
+    function (e) { setBusy(false); setStatus("Request failed: " + e.message, true); });
 }
 
 // ---- list and editor ------------------------------------------------------------
@@ -213,6 +215,7 @@ function select(uc) {
   $("note").value = uc.note || "";
   $("startTable").value = uc.startTable || "";
   $("editor").disabled = false;
+  state.dirty = false;
   $("issues").textContent = "";
   $("resultSection").hidden = true;
   renderFields();
@@ -230,7 +233,7 @@ function renderFields() {
     var rm = el("button", "remove", { type: "button" });
     up.addEventListener("click", function () { move(i, -1); });
     down.addEventListener("click", function () { move(i, 1); });
-    rm.addEventListener("click", function () { fields.splice(i, 1); renderFields(); });
+    rm.addEventListener("click", function () { fields.splice(i, 1); state.dirty = true; renderFields(); });
     var actions = el("span");
     [up, down, rm].forEach(function (b) { actions.appendChild(b); });
     return [i + 1, f.table, f.column, actions];
@@ -242,6 +245,7 @@ function move(i, d) {
   var j = i + d;
   if (j < 0 || j >= f.length) return;
   var t = f[i]; f[i] = f[j]; f[j] = t;
+  state.dirty = true;
   renderFields();
 }
 
@@ -272,6 +276,7 @@ function save() {
   return req.then(function (res) {
     if (!res.ok) { fail(res, "Save"); return false; }
     state.current = res.data;
+    state.dirty = false;
     $("issues").textContent = "";
     setStatus("Saved.");
     return refreshList().then(function () { return true; });
@@ -414,7 +419,10 @@ function renderQueries(queries) {
 }
 
 function runTest() {
-  return save().then(function (saved) {
+  // An unchanged, saved use case is tested as it is stored (so a field whose table was dropped
+  // later is reported as MISSING instead of being refused by the save).
+  var ready = state.current.id && !state.dirty ? Promise.resolve(true) : save();
+  return ready.then(function (saved) {
     if (!saved) return;
     setStatus("Testing...");
     return api("POST", "/usecases/" + state.current.id + "/test").then(function (res) {
@@ -428,7 +436,7 @@ function runTest() {
 // ---- wiring ---------------------------------------------------------------------
 
 $("connect").addEventListener("click", function () {
-  busy($("connect"), function () {
+  busy(function () {
     return api("GET", "/schema/tables").then(function (res) {
       if (!res.ok) { fail(res, "Connect"); return; }
       state.tables = res.data;
@@ -442,6 +450,10 @@ $("connect").addEventListener("click", function () {
 });
 
 $("pickTable").addEventListener("change", fillColumns);
+["name", "buttonLabel", "note"].forEach(function (id) {
+  $(id).addEventListener("input", function () { state.dirty = true; });
+});
+$("startTable").addEventListener("change", function () { state.dirty = true; });
 $("newUc").addEventListener("click", function () { if (state.tables.length) select(blank()); });
 $("addField").addEventListener("click", function () {
   var t = $("pickTable").value, c = $("pickColumn").value;
@@ -449,15 +461,16 @@ $("addField").addEventListener("click", function () {
   var dup = state.current.fields.some(function (f) { return f.table === t && f.column === c; });
   if (dup) { setStatus(t + "." + c + " is already in the list.", true); return; }
   state.current.fields.push({ table: t, column: c });
+  state.dirty = true;
   setStatus("");
   renderFields();
 });
-$("save").addEventListener("click", function () { busy($("save"), save); });
-$("test").addEventListener("click", function () { busy($("test"), runTest); });
+$("save").addEventListener("click", function () { busy(save); });
+$("test").addEventListener("click", function () { busy(runTest); });
 $("delete").addEventListener("click", function () {
   var uc = state.current;
   if (!uc || !uc.id) { select(blank()); return; }
-  busy($("delete"), function () {
+  busy(function () {
     return api("DELETE", "/usecases/" + uc.id).then(function (res) {
       if (!res.ok) { fail(res, "Delete"); return; }
       return refreshList().then(function () { select(blank()); setStatus("Deleted."); });

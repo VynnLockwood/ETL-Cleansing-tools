@@ -61,9 +61,8 @@ def _run_one(
             base["sql"] = compose(spec, graph, limit).as_string(conn)
             cur = conn.execute(compose(spec, graph, limit + 1))
             fetched = cur.fetchall()
-            columns = [d.name for d in cur.description]
         base.update(
-            columns=columns,
+            columns=[it.alias for it in spec.select],
             rows=[[_safe(v) for v in row] for row in fetched[:limit]],
             truncated=len(fetched) > limit,
         )

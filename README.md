@@ -60,7 +60,7 @@ Recommendation codes:
 | `ISOLATED_TABLE` | The unreachable table has no foreign key in or out and no column that looks like a key |
 | `FAN_OUT` | Information: a linked query was needed because one parent row has many child rows |
 
-Limits of this first version: schema `spp` only; you cannot pin a path yet; there is no "one record" key filter; key suggestions only compare against the tables this use case already reaches; the Test button needs `SPP_READER_PASSWORD` (without it the API answers 503).
+Limits of this first version: schema `spp` only; you cannot pin a path yet; there is no "one record" key filter; key suggestions only compare against the tables this use case uses (start table, field tables and the tables on their paths), within a time budget; if a check times out the card says so instead of guessing; the page needs `SPP_READER_PASSWORD` (without it the API answers 503 and Connect fails).
 
 ## Tests
 
