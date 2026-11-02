@@ -28,3 +28,19 @@ def test_docs_pages_are_not_served(monkeypatch):
     with TestClient(create_app(cfg)) as client:
         for path in ("/docs", "/redoc", "/openapi.json"):
             assert client.get(path).status_code == 404, path
+
+
+def test_reader_pool_created_when_configured(monkeypatch):
+    monkeypatch.setattr(db, "migrate", lambda url: [])
+    monkeypatch.setattr(db, "open_pool", lambda url: StubPool())
+    cfg = Config("postgresql://x", "postgresql://x", "pw", "/tmp", reader_database_url="postgresql://r")
+    with TestClient(create_app(cfg)) as client:
+        assert isinstance(client.app.state.reader_pool, StubPool)
+
+
+def test_reader_pool_none_when_not_configured(monkeypatch):
+    monkeypatch.setattr(db, "migrate", lambda url: [])
+    monkeypatch.setattr(db, "open_pool", lambda url: StubPool())
+    cfg = Config("postgresql://x", "postgresql://x", "pw", "/tmp")
+    with TestClient(create_app(cfg)) as client:
+        assert client.app.state.reader_pool is None

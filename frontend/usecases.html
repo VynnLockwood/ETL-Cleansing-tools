@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SPP Use Cases</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+  fieldset { margin: 1rem 0; }
+  table { border-collapse: collapse; margin: .5rem 0 1rem; }
+  th, td { border: 1px solid #bbb; padding: .25rem .5rem; text-align: left; vertical-align: top; }
+  .err { color: #b00020; }
+  .ok { color: #1b6e2d; font-weight: bold; }
+  .bad { color: #b00020; font-weight: bold; }
+  .warn { color: #8a5a00; font-weight: bold; }
+  .layout { display: flex; gap: 1.5rem; align-items: flex-start; }
+  .side { min-width: 220px; }
+  .side button { display: block; width: 100%; text-align: left; margin-bottom: .25rem; }
+  .side button.current { font-weight: bold; }
+  .main { flex: 1; min-width: 0; }
+  .card { border: 1px solid #ccc; border-left-width: 6px; padding: .4rem .6rem; margin: .4rem 0; }
+  .card.error { border-left-color: #b00020; }
+  .card.warning { border-left-color: #c68400; }
+  .card.info { border-left-color: #2a6fb0; }
+  pre { background: #f4f4f4; padding: .5rem; overflow-x: auto; }
+  .tabs button.current { font-weight: bold; }
+  .scroll { overflow-x: auto; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<h1>SPP Use Cases</h1>
+<p><a href="/">Excel import</a></p>
+
+<fieldset>
+  <legend>Connect</legend>
+  <label>Admin password <input type="password" id="password" autocomplete="current-password"></label>
+  <button type="button" id="connect">Connect</button>
+</fieldset>
+
+<p id="status" role="status"></p>
+
+<div class="layout">
+  <div class="side">
+    <h2>Use cases</h2>
+    <button type="button" id="newUc">+ New use case</button>
+    <div id="list"></div>
+  </div>
+
+  <div class="main">
+    <h2>Editor</h2>
+    <fieldset id="editor" disabled>
+      <p><label>Name <input type="text" id="name" size="40"></label></p>
+      <p><label>Button label <input type="text" id="buttonLabel" size="30"></label></p>
+      <p><label>Note <br><textarea id="note" rows="2" cols="60"></textarea></label></p>
+      <p><label>Start table <select id="startTable"></select></label>
+        <span class="samples">(automatic picks the table that reaches most fields)</span></p>
+
+      <h3>Fields</h3>
+      <p>
+        <select id="pickTable"></select>
+        <select id="pickColumn"></select>
+        <button type="button" id="addField">Add field</button>
+      </p>
+      <div id="fields"></div>
+
+      <p>
+        <button type="button" id="save">Save</button>
+        <button type="button" id="test">Test</button>
+        <button type="button" id="delete">Delete</button>
+      </p>
+    </fieldset>
+
+    <div id="issues"></div>
+
+    <section id="resultSection" hidden>
+      <h2>Test result</h2>
+      <p id="startInfo"></p>
+      <h3>Fields</h3>
+      <div id="fieldResults"></div>
+      <h3>Recommendations</h3>
+      <div id="recs"></div>
+      <h3>ERD</h3>
+      <div class="scroll" id="erd"></div>
+      <h3>Queries</h3>
+      <div class="tabs" id="tabs"></div>
+      <div id="queryPanel"></div>
+    </section>
+  </div>
+</div>
+
+<script src="/erd.js"></script>
+<script>
+"use strict";
+var SVGNS = "http://www.w3.org/2000/svg";
+var state = { tables: [], useCases: [], current: null, dirty: false };
+
+function $(id) { return document.getElementById(id); }
+
+function el(tag, text, attrs) {
+  var e = document.createElement(tag);
+  if (text !== undefined && text !== null) e.textContent = String(text);
+  if (attrs) Object.keys(attrs).forEach(function (k) { e[k] = attrs[k]; });
+  return e;
+}
+
+function svg(tag, attrs, text) {
+  var e = document.createElementNS(SVGNS, tag);
+  Object.keys(attrs || {}).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+  if (text !== undefined) e.textContent = String(text);
+  return e;
+}
+
+function setStatus(msg, isErr) {
+  var s = $("status");
+  s.textContent = msg;
+  s.className = isErr ? "err" : "";
+}
+
+function api(method, path, body) {
+  var headers = { "Authorization": "Basic " + btoa("admin:" + $("password").value) };
+  var opts = { method: method, headers: headers };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  return fetch("/api" + path, opts).then(function (r) {
+    return r.text().then(function (t) {
+      var data = null;
+      try { data = t ? JSON.parse(t) : null; } catch (e) { data = null; }
+      return { ok: r.ok, status: r.status, data: data };
+    });
+  });
+}
+
+function table(headers, rows) {
+  var t = el("table");
+  var hr = el("tr");
+  headers.forEach(function (h) { hr.appendChild(el("th", h)); });
+  t.appendChild(hr);
+  rows.forEach(function (r) {
+    var tr = el("tr");
+    r.forEach(function (c) {
+      var td = el("td");
+      if (c instanceof Node) td.appendChild(c); else td.textContent = c;
+      tr.appendChild(td);
+    });
+    t.appendChild(tr);
+  });
+  return t;
+}
+
+function renderIssues(parent, issues) {
+  parent.textContent = "";
+  if (!issues || !issues.length) return;
+  parent.appendChild(el("h3", "Issues (" + issues.length + ")"));
+  parent.appendChild(table(["Table", "Column", "Message"],
+    issues.map(function (i) { return [i.sheet || "", i.column || "", i.message || ""]; })));
+}
+
+function fail(res, what) {
+  var d = res.data;
+  var detail = res.status === 401 ? "wrong password" : "HTTP " + res.status;
+  if (d && typeof d.detail === "string") detail += ": " + d.detail;
+  setStatus(what + " failed: " + detail, true);
+  renderIssues($("issues"), d && d.issues);
+}
+
+// Disable every action button while a request runs, so Save and Test cannot both send a request.
+var ACTIONS = ["connect", "newUc", "save", "test", "delete"];
+function setBusy(on) { ACTIONS.forEach(function (id) { $(id).disabled = on; }); }
+function busy(work) {
+  setBusy(true);
+  return work().then(function (v) { setBusy(false); return v; },
+    function (e) { setBusy(false); setStatus("Request failed: " + e.message, true); });
+}
+
+// ---- list and editor ------------------------------------------------------------
+
+function blank() {
+  return { id: null, name: "", buttonLabel: "", note: "", startTable: null, fields: [] };
+}
+
+function renderList() {
+  var list = $("list");
+  list.textContent = "";
+  state.useCases.forEach(function (uc) {
+    var b = el("button", uc.name, { type: "button" });
+    if (state.current && state.current.id === uc.id) b.className = "current";
+    b.addEventListener("click", function () { select(JSON.parse(JSON.stringify(uc))); });
+    list.appendChild(b);
+  });
+}
+
+function fillTableSelect(select, withAuto) {
+  select.textContent = "";
+  if (withAuto) select.appendChild(el("option", "(automatic)", { value: "" }));
+  state.tables.forEach(function (t) { select.appendChild(el("option", t.name, { value: t.name })); });
+}
+
+function fillColumns() {
+  var sel = $("pickColumn");
+  sel.textContent = "";
+  var t = state.tables.filter(function (x) { return x.name === $("pickTable").value; })[0];
+  (t ? t.columns : []).forEach(function (c) {
+    var label = c.name + " (" + c.sqlType + (c.isPrimaryKey ? ", pk" : "") + (c.isForeignKey ? ", fk" : "") + ")";
+    sel.appendChild(el("option", label, { value: c.name }));
+  });
+}
+
+function select(uc) {
+  state.current = uc;
+  $("name").value = uc.name || "";
+  $("buttonLabel").value = uc.buttonLabel || "";
+  $("note").value = uc.note || "";
+  $("startTable").value = uc.startTable || "";
+  $("editor").disabled = false;
+  state.dirty = false;
+  $("issues").textContent = "";
+  $("resultSection").hidden = true;
+  renderFields();
+  renderList();
+}
+
+function renderFields() {
+  var root = $("fields");
+  root.textContent = "";
+  var fields = state.current.fields;
+  if (!fields.length) { root.appendChild(el("p", "No fields yet. Pick a table and a column, then Add field.")); return; }
+  root.appendChild(table(["#", "Table", "Column", ""], fields.map(function (f, i) {
+    var up = el("button", "up", { type: "button" });
+    var down = el("button", "down", { type: "button" });
+    var rm = el("button", "remove", { type: "button" });
+    up.addEventListener("click", function () { move(i, -1); });
+    down.addEventListener("click", function () { move(i, 1); });
+    rm.addEventListener("click", function () { fields.splice(i, 1); state.dirty = true; renderFields(); });
+    var actions = el("span");
+    [up, down, rm].forEach(function (b) { actions.appendChild(b); });
+    return [i + 1, f.table, f.column, actions];
+  })));
+}
+
+function move(i, d) {
+  var f = state.current.fields;
+  var j = i + d;
+  if (j < 0 || j >= f.length) return;
+  var t = f[i]; f[i] = f[j]; f[j] = t;
+  state.dirty = true;
+  renderFields();
+}
+
+function readForm() {
+  var uc = state.current;
+  uc.name = $("name").value;
+  uc.buttonLabel = $("buttonLabel").value || null;
+  uc.note = $("note").value || null;
+  uc.startTable = $("startTable").value || null;
+  return {
+    name: uc.name, buttonLabel: uc.buttonLabel, note: uc.note, startTable: uc.startTable,
+    fields: uc.fields.map(function (f) { return { table: f.table, column: f.column }; })
+  };
+}
+
+function refreshList() {
+  return api("GET", "/usecases").then(function (res) {
+    if (!res.ok) { fail(res, "Loading use cases"); return; }
+    state.useCases = res.data;
+    renderList();
+  });
+}
+
+function save() {
+  var body = readForm();
+  var uc = state.current;
+  var req = uc.id ? api("PUT", "/usecases/" + uc.id, body) : api("POST", "/usecases", body);
+  return req.then(function (res) {
+    if (!res.ok) { fail(res, "Save"); return false; }
+    state.current = res.data;
+    state.dirty = false;
+    $("issues").textContent = "";
+    setStatus("Saved.");
+    return refreshList().then(function () { return true; });
+  });
+}
+
+// ---- test result ----------------------------------------------------------------
+
+function statusCell(s) {
+  var cls = s === "ok" ? "ok" : s === "unreachable" ? "bad" : "warn";
+  return el("span", s === "ok" ? "OK" : s.toUpperCase(), { className: cls });
+}
+
+function renderResult(r) {
+  $("resultSection").hidden = false;
+  $("startInfo").textContent = r.startTable
+    ? "Start table: " + r.startTable + " (" + r.startTableReason + ")"
+    : "No start table: no valid field.";
+  $("fieldResults").textContent = "";
+  $("fieldResults").appendChild(table(["Field", "Status", "Query", "Path / reason"], r.fields.map(function (f) {
+    return [f.table + "." + f.column, statusCell(f.status), f.query || "",
+      f.status === "ok" ? (f.via.join(" ; ") || "(start table)") : (f.reason || "")];
+  })));
+
+  var recs = $("recs");
+  recs.textContent = "";
+  if (!r.recommendations.length) recs.appendChild(el("p", "Nothing to recommend."));
+  r.recommendations.forEach(function (x) {
+    var card = el("div", null, { className: "card " + x.severity });
+    card.appendChild(el("strong", x.code + " (" + x.severity + ")"));
+    card.appendChild(el("div", x.message));
+    if (x.fix) {
+      var ev = x.evidence ? " [" + x.evidence.matched + " of " + x.evidence.total + " values match]" : "";
+      card.appendChild(el("div", "Suggested key: " + x.fix.table + "." + x.fix.column + " -> " +
+        x.fix.refTable + "." + x.fix.refColumn + ev));
+    }
+    recs.appendChild(card);
+  });
+
+  drawErd(r.erd, r.startTable);
+  renderQueries(r.queries);
+}
+
+var ROLE_FILL = { start: "#d6ecff", reached: "#e7f5e7", unreachable: "#fde0e0" };
+var ERD_TOP = 60;
+var CARD = { "many-to-one": "n:1", "one-to-many": "1:n", "one-to-one": "1:1" };
+
+function drawErd(erd, start) {
+  var host = $("erd");
+  host.textContent = "";
+  if (!erd.nodes.length) { host.appendChild(el("p", "Nothing to draw.")); return; }
+  var lay = Erd.layoutErd(erd.nodes, erd.edges, start);
+  var root = svg("svg", { width: lay.width, height: lay.height + ERD_TOP, viewBox: "0 0 " + lay.width + " " + (lay.height + ERD_TOP) });
+  var g = svg("g", { transform: "translate(0," + ERD_TOP + ")" });
+  root.appendChild(g);
+  var box = {};
+  erd.nodes.forEach(function (n) {
+    var p = lay.positions[n.table];
+    box[n.table] = { x: p.x, y: p.y, w: Erd.NODE_W, h: Erd.nodeHeight(n) };
+  });
+  var arcs = 0;
+  erd.edges.forEach(function (e) {
+    var a = box[e.from], b = box[e.to];
+    if (!a || !b) return;
+    var suggested = e.status === "suggested";
+    var far = Math.abs(a.x - b.x) > Erd.NODE_W + Erd.GAP_X + 1;
+    var d, lx, ly;
+    if (far) {
+      // skip over the layers in between: arc above all boxes so the line cannot look like it ends in one of them
+      arcs += 1;
+      var x1 = a.x + a.w / 2, y1 = a.y, x2 = b.x + b.w / 2, y2 = b.y;
+      var top = Math.min(a.y, b.y) - 20 - 14 * arcs;
+      d = "M" + x1 + "," + y1 + " C" + x1 + "," + top + " " + x2 + "," + top + " " + x2 + "," + y2;
+      lx = (x1 + x2) / 2;
+      ly = (y1 + y2) / 8 + 0.75 * top - 4;
+    } else if (a.x === b.x) {
+      var xr = a.x + a.w, ya = a.y + a.h / 2, yb = b.y + b.h / 2;
+      d = "M" + xr + "," + ya + " C" + (xr + 60) + "," + ya + " " + (xr + 60) + "," + yb + " " + xr + "," + yb;
+      lx = xr + 45; ly = (ya + yb) / 2;
+    } else {
+      var left = a.x < b.x ? a : b, right = a.x < b.x ? b : a;
+      var xa = a.x < b.x ? a.x + a.w : a.x, xb = a.x < b.x ? b.x : b.x + b.w;
+      var yA = a.y + a.h / 2, yB = b.y + b.h / 2;
+      d = "M" + xa + "," + yA + " L" + xb + "," + yB;
+      lx = (xa + xb) / 2; ly = (yA + yB) / 2 - 4;
+    }
+    var color = suggested ? "#b00020" : "#444";
+    g.appendChild(svg("path", {
+      d: d, fill: "none", stroke: color, "stroke-width": "1.5", "stroke-dasharray": suggested ? "6,4" : "none"
+    }));
+    g.appendChild(svg("text", {
+      x: lx, y: ly, "font-size": "10", fill: color, "text-anchor": "middle",
+      stroke: "#fff", "stroke-width": "3", "paint-order": "stroke"
+    }, e.columns.join(",") + " " + (CARD[e.cardinality] || "") + (suggested ? " suggested" : "")));
+  });
+  erd.nodes.forEach(function (n) {
+    var b = box[n.table];
+    g.appendChild(svg("rect", {
+      x: b.x, y: b.y, width: b.w, height: b.h, rx: "4", fill: ROLE_FILL[n.role] || "#fff",
+      stroke: n.role === "unreachable" ? "#b00020" : "#444"
+    }));
+    g.appendChild(svg("text", { x: b.x + 6, y: b.y + 16, "font-size": "12", "font-weight": "bold" }, n.table));
+    n.fields.forEach(function (f, i) {
+      g.appendChild(svg("text", { x: b.x + 10, y: b.y + 38 + i * 14, "font-size": "11" }, f));
+    });
+  });
+  host.appendChild(root);
+}
+
+function renderQueries(queries) {
+  var tabs = $("tabs");
+  tabs.textContent = "";
+  var panel = $("queryPanel");
+  panel.textContent = "";
+  if (!queries.length) { panel.appendChild(el("p", "No query: no field could be reached.")); return; }
+  var buttons = [];
+  function show(i) {
+    buttons.forEach(function (b, j) { b.className = i === j ? "current" : ""; });
+    var q = queries[i];
+    panel.textContent = "";
+    panel.appendChild(el("h4", q.title + " (" + q.kind + ")"));
+    if (q.mergeKey.length) panel.appendChild(el("p", "Matched to its parent by: " + q.mergeKey.join(", ")));
+    panel.appendChild(el("pre", q.sql));
+    if (q.error) { panel.appendChild(el("p", "Error: " + q.error, { className: "err" })); return; }
+    var wrap = el("div", null, { className: "scroll" });
+    wrap.appendChild(table(q.columns, q.rows.map(function (row) {
+      return row.map(function (v) { return v === null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v); });
+    })));
+    panel.appendChild(wrap);
+    if (q.truncated) panel.appendChild(el("p", "Only the first " + q.rows.length + " rows are shown."));
+    if (!q.rows.length) panel.appendChild(el("p", "No rows."));
+  }
+  queries.forEach(function (q, i) {
+    var b = el("button", q.id, { type: "button" });
+    b.addEventListener("click", function () { show(i); });
+    buttons.push(b);
+    tabs.appendChild(b);
+  });
+  show(0);
+}
+
+function runTest() {
+  // An unchanged, saved use case is tested as it is stored (so a field whose table was dropped
+  // later is reported as MISSING instead of being refused by the save).
+  var ready = state.current.id && !state.dirty ? Promise.resolve(true) : save();
+  return ready.then(function (saved) {
+    if (!saved) return;
+    setStatus("Testing...");
+    return api("POST", "/usecases/" + state.current.id + "/test").then(function (res) {
+      if (!res.ok) { fail(res, "Test"); return; }
+      setStatus("Test done.");
+      renderResult(res.data);
+    });
+  });
+}
+
+// ---- wiring ---------------------------------------------------------------------
+
+$("connect").addEventListener("click", function () {
+  busy(function () {
+    return api("GET", "/schema/tables").then(function (res) {
+      if (!res.ok) { fail(res, "Connect"); return; }
+      state.tables = res.data;
+      fillTableSelect($("pickTable"), false);
+      fillTableSelect($("startTable"), true);
+      fillColumns();
+      setStatus("Connected: " + state.tables.length + " tables.");
+      return refreshList().then(function () { select(blank()); });
+    });
+  });
+});
+
+$("pickTable").addEventListener("change", fillColumns);
+["name", "buttonLabel", "note"].forEach(function (id) {
+  $(id).addEventListener("input", function () { state.dirty = true; });
+});
+$("startTable").addEventListener("change", function () { state.dirty = true; });
+$("newUc").addEventListener("click", function () { if (state.tables.length) select(blank()); });
+$("addField").addEventListener("click", function () {
+  var t = $("pickTable").value, c = $("pickColumn").value;
+  if (!t || !c) return;
+  var dup = state.current.fields.some(function (f) { return f.table === t && f.column === c; });
+  if (dup) { setStatus(t + "." + c + " is already in the list.", true); return; }
+  state.current.fields.push({ table: t, column: c });
+  state.dirty = true;
+  setStatus("");
+  renderFields();
+});
+$("save").addEventListener("click", function () { busy(save); });
+$("test").addEventListener("click", function () { busy(runTest); });
+$("delete").addEventListener("click", function () {
+  var uc = state.current;
+  if (!uc || !uc.id) { select(blank()); return; }
+  busy(function () {
+    return api("DELETE", "/usecases/" + uc.id).then(function (res) {
+      if (!res.ok) { fail(res, "Delete"); return; }
+      return refreshList().then(function () { select(blank()); setStatus("Deleted."); });
+    });
+  });
+});
+</script>
+</body>
+</html>

@@ -23,6 +23,7 @@ docker compose up -d --build --wait
 | --- | --- |
 | `http://localhost/` | Import page (asks for the admin password) |
 | `http://localhost/api/healthz` | API health check |
+| `http://localhost/usecases.html` | Use case checker (same admin login) |
 | `http://localhost/superset/` | Superset (`SUPERSET_ADMIN_USER` / `SUPERSET_ADMIN_PASSWORD` from `.env`) |
 
 The API uses HTTP Basic auth as `admin` with `ADMIN_PASSWORD`; only `/healthz` is open (the interactive API docs pages `/docs`, `/redoc` and `/openapi.json` are disabled).
@@ -33,6 +34,33 @@ The API uses HTTP Basic auth as `admin` with `ADMIN_PASSWORD`; only `/healthz` i
 2. **Then data.** Use "Load data into existing tables": upload a workbook whose sheets are named after existing tables and whose headers are column names. Sheets are loaded parents-first (foreign-key order, not sheet order). The load is all-or-nothing: if any row is rejected nothing is loaded and the issues are listed.
 
 Without dictionary mode, an ordinary workbook is profiled instead: column types are inferred and keys are detected from the data.
+
+## Use cases
+
+Open `http://localhost/usecases.html`, type the admin password and press Connect.
+
+1. **New use case.** Give it a name (the button on your screen), optionally a note and a start table.
+2. **Pick fields.** Choose a table, then a column, then Add field. Fields can come from many tables; reorder or remove them as you like.
+3. **Test.** The checker works out how to get every field through the foreign keys and shows:
+   - each field as OK, UNREACHABLE or MISSING (the table or column no longer exists), with the path used;
+   - recommendation cards for what to fix;
+   - an ERD of just this use case (solid line = foreign key, red dashed = suggested key);
+   - one tab per query with the SQL and a live preview.
+
+How it decides: foreign keys are the lines between tables. Following a key from the table that holds it to the table it points at costs 1 (rows stay the same); the other way costs 3 (one row becomes many). The start table is the one that reaches most fields cheapest, unless you choose one. Everything reachable without crossing a one-to-many line becomes one flat **main** query. Each one-to-many branch becomes its own **linked** query, tied to its parent by the key columns, so rows never multiply. Previews run as `spp_reader`, read-only, 50 rows, 5 seconds per query; a query that fails shows its error and the others still run.
+
+Recommendation codes:
+
+| Code | Meaning |
+|---|---|
+| `NO_PATH_KEY_MATCH` | A field's table cannot be reached, but a column looks like the missing key: add this foreign key (shows how many values match; "no data to confirm" when the table is empty and only the column name hints at it) |
+| `MISSING_TABLE` | A column named like `mtZone` has no foreign key and no table of that name exists |
+| `NO_PRIMARY_KEY` | The unreachable table has no primary or unique key, so nothing can point to it |
+| `AMBIGUOUS_PATH` | Several equally short paths reach a table; the first is used and the others are listed |
+| `ISOLATED_TABLE` | The unreachable table has no foreign key in or out and no column that looks like a key |
+| `FAN_OUT` | Information: a linked query was needed because one parent row has many child rows |
+
+Limits of this first version: schema `spp` only; you cannot pin a path yet; there is no "one record" key filter; key suggestions only compare against the tables this use case uses (start table, field tables and the tables on their paths), within a time budget; if a check times out the card says so instead of guessing; the page needs `SPP_READER_PASSWORD` (without it the API answers 503 and Connect fails).
 
 ## Tests
 
@@ -55,7 +83,7 @@ scripts/smoke.sh postgres web    # chosen sections only
 | --- | --- |
 | `postgres` | roles `spp_owner`, `spp_api`, `spp_reader`, `superset` and databases `spp`, `superset_meta` exist |
 | `web` | `/` serves the page, `/api/healthz` answers, `/api/imports/...` is 401 without credentials |
-| `e2e` | runs `scripts/e2e.py` (dictionary upload, apply, re-apply, data load, repeat load, auth) |
+| `e2e` | runs `scripts/e2e.py` (dictionary upload, apply, re-apply, data load, repeat load, use case test, auth) |
 | `superset` | `/superset/health`, admin login, database `SPP` exists |
 
 `scripts/e2e.py` uses only the Python standard library and can target any base URL: `E2E_API_BASE` (default `http://localhost/api`), `ADMIN_PASSWORD` (environment or `.env`), and optionally `PSQL_CMD` for the database assertions. `scripts/smoke.sh e2e` passes its own `PSQL_CMD` plus `-d spp` to the script; run on its own, the script needs `PSQL_CMD` to include `-d spp`, for example `PSQL_CMD="docker compose exec -T postgres psql -U postgres -tA -d spp"`.
@@ -65,7 +93,7 @@ The e2e check can be re-run on the same stack: it applies the dictionary (tables
 
 - The API gets its database passwords as separate variables (`SPP_API_PASSWORD`, `SPP_OWNER_PASSWORD`; optional `SPP_DB_HOST`, `SPP_DB_PORT`, `SPP_DB_NAME`, `SPP_API_USER`, `SPP_OWNER_USER`), so they may contain any characters such as `/` or `%` and need no URL encoding. `DATABASE_URL` / `MIGRATE_DATABASE_URL` still work as explicit overrides.
 - The role passwords in `.env` only take effect on a fresh Postgres volume. Changing them later does not change the existing roles; use `ALTER ROLE` or recreate the volume (`docker compose down -v` deletes all data).
-- Superset reads with `spp_reader` (SELECT only, including on tables created later).
+- Superset and the use case previews read with `spp_reader` (SELECT only, including on tables created later); the API needs `SPP_READER_PASSWORD` for the previews.
 - Imported tables are owned by `spp_api`.
 - The API image runs as the non-root user `app` (uid 10001). Uploaded files go to `/data/uploads`, owned by `app` in the image. A Docker named volume mounted there copies that ownership only when the volume is first created and empty; a volume created earlier by a root-running image keeps `root` ownership and the API then cannot save uploads. Fix with `docker compose run --rm --user root api chown -R 10001:10001 /data/uploads`, or recreate the volume.
 
