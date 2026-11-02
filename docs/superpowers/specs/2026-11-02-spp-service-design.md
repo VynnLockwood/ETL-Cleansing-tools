@@ -1,7 +1,7 @@
 # SPP Database Service: Design
 
 Date: 2026-11-02
-Status: Draft for review
+Status: Approved. Parts 1–2 (stack, Excel import, load into existing tables) are implemented, see docs/superpowers/HANDOFF.md; part 3 (use-case ERD and view builder) is not started.
 
 ## 1. Purpose
 
@@ -21,7 +21,7 @@ Success criteria:
 
 Three parts, built in this order. Each part has its own plan.
 
-1. Stack: Docker Compose with nginx, Postgres, Go API, simple frontend, Superset, Redis.
+1. Stack: Docker Compose with nginx, Postgres, Python API (FastAPI), simple frontend, Superset, Redis.
 2. Excel import and schema creation.
 3. Use-case ERD and view builder.
 
@@ -35,12 +35,12 @@ Docker Compose, one internal network, only nginx publishes a port (80).
 
 | Service | Role | Notes |
 |---|---|---|
-| nginx | Reverse proxy | `/` to frontend, `/api/` to Go, `/superset/` to Superset |
+| nginx | Reverse proxy | `/` to frontend, `/api/` to the Python API, `/superset/` to Superset |
 | frontend | Simple static UI | Import wizard, use-case builder, Mermaid ERD, links to Superset |
-| api | Go backend (REST, JSON) | Runs migrations at startup |
+| api | Python backend (FastAPI, REST, JSON) | Runs migrations at startup |
 | postgres | PostgreSQL 16 | Databases `spp` and `superset_meta`, created by init script |
 | superset | Apache Superset | Served under `/superset` via `SUPERSET_APP_ROOT`; reads `spp` read-only |
-| redis | Superset cache and Celery broker | Not used by Go |
+| redis | Superset cache (no Celery in v1) | Not used by the API |
 
 Startup order: postgres healthy, then api (migrates) and superset (`db upgrade`, admin user, `init`), then nginx. Secrets live in `.env` (not in git), with a committed `.env.example`. Postgres and Superset use named volumes.
 
@@ -101,7 +101,9 @@ Authentication in version 1: one admin login (shared secret from `.env`) for the
 docker-compose.yml   .env.example   README.md
 nginx/        nginx.conf
 postgres/     init/            (create roles and databases)
-api/          cmd/, internal/{imports,schema,usecase,superset,db}, migrations/, Dockerfile
+api/          app/{config,db,main,auth}.py, app/migrations/*.sql,
+              app/imports/{models,workbook,infer,keys,dictionary,ddl,apply,load,router}.py,
+              tests/, Dockerfile
 frontend/     index.html and small JS, Dockerfile
 superset/     superset_config.py, bootstrap.sh, Dockerfile
 docs/         superpowers/specs/, data-dict-spp.xlsx
@@ -114,7 +116,7 @@ docs/         superpowers/specs/, data-dict-spp.xlsx
 
 ## 10. Testing
 
-- Go unit tests: type inference, key and foreign-key detection, join-path search, using fixture workbooks. The SPP data dictionary with its known misaligned types is a negative test.
+- Python unit tests (pytest): type inference, key and foreign-key detection, join-path search, using fixture workbooks. The SPP data dictionary with its known misaligned types is a negative test.
 - Integration tests: a throwaway Postgres container runs import, apply, publish a view, and checks the returned data.
 - Smoke test: after `docker compose up`, `/healthz`, `/superset/health` and the frontend respond through nginx.
 
@@ -127,4 +129,4 @@ To resolve before or during the first import:
 - Unit mismatches: `genContractCapacityW` (described as MW), `distanceToConnectionM` (km), `bessCapacityWh` (MW-hr).
 - `peaConnectionPointA` and `peaConnectionPointB` both map to source column `AU`.
 - `sppProjectAddress` carries a note that a PEA address was put in the plant address column by mistake.
-- The `mt*` master tables referenced by foreign keys are not defined in the dictionary. Their structure and values are needed for the first version.
+- The `mt*` master tables referenced by foreign keys ARE defined on the dictionary's `Master` sheet, except `mtVoltageLevel` and `mtZone`. The foreign keys to those two are left unaccepted in the proposal, and their structure and values are still needed.

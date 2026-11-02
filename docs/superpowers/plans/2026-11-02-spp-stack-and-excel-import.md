@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Run the Docker stack (nginx, Postgres, Go API, frontend, Superset, Redis) and let the owner import an Excel workbook, review a proposed schema, and have the tables, keys and data created in Postgres.
+**Goal:** Run the Docker stack (nginx, Postgres, Python API, frontend, Superset, Redis) and let the owner import an Excel workbook, review a proposed schema, and have the tables, keys and data created in Postgres.
 
-**Architecture:** Go API (`net/http`, `pgx`, `excelize`, `golang-migrate`) owns migrations and the import pipeline: read workbook, profile columns, detect keys (or follow a dictionary), review, apply in one transaction. Superset reads the same database with a read-only role. nginx is the only public entry.
+**Architecture:** Python API (FastAPI, `psycopg` 3, `openpyxl`, plain SQL migrations) owns migrations and the import pipeline: read workbook, profile columns, detect keys (or follow a dictionary), review, apply in one transaction. Superset reads the same database with a read-only role. nginx is the only public entry.
 
-**Tech Stack:** Go 1.22, PostgreSQL 16, Apache Superset, Redis, nginx, Docker Compose, plain HTML/JS frontend.
+**Tech Stack:** Python 3.12, FastAPI, PostgreSQL 16, Apache Superset, Redis, nginx, Docker Compose, plain HTML/JS frontend.
 
 **Spec:** `docs/superpowers/specs/2026-11-02-spp-service-design.md` (spec sections 3, 4, 6, 7, 8, 9, 10; use-case builder, spec section 5, is a later plan).
 
@@ -14,7 +14,7 @@
 
 - PostgreSQL 16; databases `spp` and `superset_meta`; schemas `spp`, `app`, `usecase`.
 - Roles: `spp_owner` (migrations, owns schemas), `spp_api` (read/write `spp` and `app`, can create views in `usecase`, no DDL on `spp` outside the import transaction), `spp_reader` (read-only `spp` and `usecase`, used by Superset).
-- Only nginx publishes a port (80). Routes: `/` frontend, `/api/` Go, `/superset/` Superset (`SUPERSET_APP_ROOT`).
+- Only nginx publishes a port (80). Routes: `/` frontend, `/api/` Python API, `/superset/` Superset (`SUPERSET_APP_ROOT`).
 - Secrets in `.env` (not in git); `.env.example` committed.
 - Foreign keys are real constraints. Apply runs in one transaction and rolls back on any conversion problem.
 - Import records live in `app.import_job` and `app.import_issue`.
@@ -37,18 +37,18 @@ docker-compose.yml  docker-compose.test.yml  .env.example  .gitignore  README.md
 scripts/smoke.sh
 postgres/init/01-roles.sh
 nginx/nginx.conf
-api/Dockerfile  api/go.mod  api/cmd/api/main.go
-api/internal/config/config.go
-api/internal/db/db.go                 (Open, Migrate)
-api/migrations/0001_schemas_roles.up.sql  0002_import_tables.up.sql
-api/internal/imports/workbook.go      (read xlsx)
-api/internal/imports/infer.go         (types)
-api/internal/imports/keys.go          (PK/FK detection)
-api/internal/imports/dictionary.go    (dictionary mode + validation)
-api/internal/imports/ddl.go           (proposal -> DDL)
-api/internal/imports/apply.go         (transactional create + load)
-api/internal/imports/http.go          (handlers + job store)
-api/internal/httpx/auth.go            (admin auth middleware)
+api/Dockerfile  api/requirements.txt  api/requirements-dev.txt  api/pytest.ini
+api/app/{config,db,main,auth}.py
+api/app/migrations/0001_schemas_roles.sql  0002_import_tables.sql  0003_api_create_spp.sql
+api/app/imports/models.py       (Sheet, Workbook, Issue, profile + proposal models)
+api/app/imports/workbook.py     (read xlsx)
+api/app/imports/infer.py        (types)
+api/app/imports/keys.py         (PK/FK detection)
+api/app/imports/dictionary.py   (dictionary mode + validation)
+api/app/imports/ddl.py          (proposal -> DDL)
+api/app/imports/apply.py        (transactional create + load)
+api/app/imports/router.py       (handlers + job store)
+api/tests/                      (mirrors app/, fixtures built in tests)
 frontend/Dockerfile  frontend/index.html
 superset/Dockerfile  superset/superset_config.py  superset/bootstrap.sh
 ```
@@ -69,131 +69,133 @@ superset/Dockerfile  superset/superset_config.py  superset/bootstrap.sh
 - [ ] **Step 4: Run** `docker compose down -v && docker compose up -d postgres redis && scripts/smoke.sh postgres` — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: compose skeleton with postgres roles and databases`.
 
-### Task 2: Go API skeleton, config, migrations runner, healthz
+### Task 2: Python API skeleton, config, migration runner, healthz
 
 **Files:**
-- Create: `api/go.mod`, `api/cmd/api/main.go`, `api/internal/config/config.go`, `api/internal/db/db.go`, `api/migrations/0001_schemas_roles.up.sql`, `api/Dockerfile`
-- Test: `api/internal/config/config_test.go`, `api/internal/db/db_test.go`, `api/cmd/api/main_test.go`
+- Delete: all existing Go files under `api/` (`go.mod`, `go.sum`, `cmd/`, `internal/`, Go `migrations/`, old `Dockerfile`)
+- Create: `api/requirements.txt`, `api/requirements-dev.txt`, `api/Dockerfile`, `api/app/__init__.py`, `api/app/config.py`, `api/app/db.py`, `api/app/main.py`, `api/app/migrations/0001_schemas_roles.sql`, `api/pytest.ini`
+- Modify: `docker-compose.yml` (api service), `.env.example`
+- Test: `api/tests/test_config.py`, `api/tests/test_db.py`, `api/tests/test_main.py`, `api/tests/conftest.py`
 
 **Interfaces:**
 - Produces:
-  - `config.Load() (Config, error)`; `Config{DatabaseURL, AdminPassword, UploadDir, Addr string}` from env `DATABASE_URL`, `ADMIN_PASSWORD`, `UPLOAD_DIR` (default `/data/uploads`), `ADDR` (default `:8080`); error if `DATABASE_URL` or `ADMIN_PASSWORD` empty.
-  - `db.Open(ctx context.Context, url string) (*pgxpool.Pool, error)`.
-  - `db.Migrate(url string) error` — runs embedded migrations as `spp_owner`.
-  - `func newRouter(pool *pgxpool.Pool, cfg config.Config) http.Handler` in `main.go`; `GET /healthz` returns `200 {"status":"ok"}`.
+  - `config.load_config(env: Mapping[str, str] | None = None) -> Config`; `Config` is a frozen dataclass `(database_url: str, migrate_database_url: str, admin_password: str, upload_dir: str)` from env `DATABASE_URL`, `MIGRATE_DATABASE_URL` (default: `DATABASE_URL`), `ADMIN_PASSWORD`, `UPLOAD_DIR` (default `/data/uploads`); raises `ConfigError` if `DATABASE_URL` or `ADMIN_PASSWORD` is empty.
+  - `db.migrate(url: str) -> list[str]` — applies `app/migrations/*.sql` in filename order, each in its own transaction, records applied versions in `app.schema_migrations(version text primary key, applied_at timestamptz default now())` (the runner first runs `CREATE SCHEMA IF NOT EXISTS app` and the table), holds `pg_advisory_lock` while running, returns the versions applied this call (empty list when nothing is pending).
+  - `db.open_pool(url: str) -> psycopg_pool.ConnectionPool`.
+  - `main.create_app(cfg: Config | None = None) -> FastAPI` — app factory; startup runs `db.migrate(cfg.migrate_database_url)` then opens a pool on `cfg.database_url` (stored at `app.state.pool`, `app.state.cfg`); `GET /healthz` returns `200 {"status": "ok"}`.
+  - `conftest.py` fixture `db_url` (env `TEST_DATABASE_URL`, skips the test when unset) and fixture `clean_db` that drops and recreates schemas `spp`, `app`, `usecase` (CASCADE) as `spp_owner` so each test starts empty.
 
-- [ ] **Step 1: Write failing tests.** `TestLoadRequiresDatabaseURL` (empty env → error), `TestLoadDefaults` (`UploadDir == "/data/uploads"`, `Addr == ":8080"`), `TestHealthz` (httptest GET `/healthz` → 200 and body `{"status":"ok"}`), `TestMigrateCreatesSchemas` (skip when `TEST_DATABASE_URL` unset; after `Migrate`, `information_schema.schemata` contains `spp`, `app`, `usecase`).
-- [ ] **Step 2: Run** `cd api && go test ./...` — Expected: FAIL (undefined).
-- [ ] **Step 3: Implement** the signatures above. `0001` creates schemas `spp`, `app`, `usecase` and grants: `spp_api` ALL DML on `spp`/`app` (default privileges too) and CREATE on `usecase`; `spp_reader` SELECT on `spp` and `usecase` (default privileges too). Embed migrations with `//go:embed`. Dockerfile: multi-stage, static binary. Add `api` service to compose (env from `.env`, `UPLOAD_DIR` volume `uploads`, `DATABASE_URL` as `spp_owner` for migrate and `spp_api` for runtime — two env vars `MIGRATE_DATABASE_URL`, `DATABASE_URL`; extend `Config` accordingly).
-- [ ] **Step 4: Run** `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d postgres && cd api && TEST_DATABASE_URL=postgres://spp_owner:$SPP_OWNER_PASSWORD@localhost:55432/spp go test ./...` — Expected: PASS.
-- [ ] **Step 5: Commit** `feat: go api skeleton with config, migrations and healthz`.
+- [ ] **Step 1: Write failing tests:** `test_load_requires_database_url`, `test_load_requires_admin_password`, `test_load_defaults` (`upload_dir == "/data/uploads"`, `migrate_database_url == database_url`), `test_healthz` (TestClient with a stub pool/migrate monkeypatched; 200 and `{"status": "ok"}`), `test_migrate_creates_schemas` (needs DB; after `migrate`, `information_schema.schemata` contains `spp`, `app`, `usecase`), `test_migrate_is_idempotent` (second call returns `[]`).
+- [ ] **Step 2: Run** `cd api && python -m pytest -q` — Expected: FAIL (import errors).
+- [ ] **Step 3: Implement** per the interfaces. Dependencies in `requirements.txt`: `fastapi`, `uvicorn[standard]`, `psycopg[binary,pool]`, `openpyxl`, `python-multipart`; dev: `pytest`, `httpx`. Migration `0001` creates schemas `spp`, `app`, `usecase` (IF NOT EXISTS) and grants: `spp_api` all DML on `spp` and `app` (existing tables and `ALTER DEFAULT PRIVILEGES` for tables created by the current role) plus `CREATE` on schema `usecase`; `spp_reader` `SELECT` on `spp` and `usecase` (existing + default privileges); `USAGE` on all three schemas for both roles. Dockerfile: `python:3.12-slim`, install requirements, `CMD uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8080`. In `docker-compose.yml` keep the existing `api` service but remove `ADDR`, keep env `DATABASE_URL`, `MIGRATE_DATABASE_URL`, `ADMIN_PASSWORD`, `UPLOAD_DIR`; add the missing ones to `.env.example` if absent.
+- [ ] **Step 4: Run** `cd api && pip install -r requirements.txt -r requirements-dev.txt && TEST_DATABASE_URL=… python -m pytest -q` — Expected: PASS, output pristine.
+- [ ] **Step 5: Commit** `feat: python api skeleton with config, migrations and healthz`.
 
 ### Task 3: Import job tables and admin auth
 
 **Files:**
-- Create: `api/migrations/0002_import_tables.up.sql`, `api/internal/httpx/auth.go`
-- Test: `api/internal/httpx/auth_test.go`, `api/internal/db/import_tables_test.go`
+- Create: `api/app/migrations/0002_import_tables.sql`, `api/app/auth.py`
+- Test: `api/tests/test_auth.py`, `api/tests/test_import_tables.py`
 
 **Interfaces:**
-- Produces: `httpx.AdminAuth(password string) func(http.Handler) http.Handler` (HTTP Basic, username `admin`, constant-time compare, `401` with `WWW-Authenticate` otherwise). Tables `app.import_job(id uuid pk default gen_random_uuid(), filename text, status text check in ('uploaded','proposed','applied','failed'), proposal jsonb, created_at timestamptz default now())` and `app.import_issue(id bigserial pk, job_id uuid references app.import_job, sheet text, "column" text, row int, message text)`.
+- Produces: `auth.admin_auth(password: str) -> Callable` — a FastAPI dependency factory (HTTP Basic, username `admin`, `secrets.compare_digest`, `401` with `WWW-Authenticate: Basic` otherwise). Tables `app.import_job(id uuid primary key default gen_random_uuid(), filename text, status text check (status in ('uploaded','proposed','applied','failed')), proposal jsonb, created_at timestamptz default now())` and `app.import_issue(id bigserial primary key, job_id uuid references app.import_job(id), sheet text, "column" text, row int, message text)`.
 
-- [ ] **Step 1: Write failing tests.** `TestAdminAuthRejectsMissingAndWrong` (no header → 401, wrong password → 401), `TestAdminAuthAllowsCorrect` (→ next handler called), `TestImportTablesExist` (skip without `TEST_DATABASE_URL`; both tables exist, inserting an issue with unknown `job_id` fails).
-- [ ] **Step 2: Run** `go test ./internal/httpx ./internal/db` — Expected: FAIL.
-- [ ] **Step 3: Implement** migration and middleware per the interfaces.
-- [ ] **Step 4: Run** same command with `TEST_DATABASE_URL` — Expected: PASS.
+- [ ] **Step 1: Write failing tests:** `test_rejects_missing_and_wrong` (no header → 401, wrong password → 401, wrong username → 401, all with `WWW-Authenticate`), `test_allows_correct`, `test_import_tables_exist` (needs DB; both tables exist after `migrate`; inserting an issue with unknown `job_id` raises a foreign-key error).
+- [ ] **Step 2: Run** `python -m pytest api/tests/test_auth.py api/tests/test_import_tables.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** migration and dependency per the interfaces.
+- [ ] **Step 4: Run** same with `TEST_DATABASE_URL` — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: import job tables and admin auth`.
 
 ### Task 4: Workbook reader
 
 **Files:**
-- Create: `api/internal/imports/workbook.go`
-- Test: `api/internal/imports/workbook_test.go`
+- Create: `api/app/imports/__init__.py`, `api/app/imports/models.py`, `api/app/imports/workbook.py`
+- Test: `api/tests/imports/test_workbook.py`
 
 **Interfaces:**
-- Produces:
-  - `type Sheet struct{ Name string; Headers []string; Rows [][]string }`, `type Workbook struct{ Sheets []Sheet }`, `type Issue struct{ Sheet, Column string; Row int; Message string }`.
-  - `ReadWorkbook(r io.Reader) (Workbook, []Issue, error)` — row 1 is the header; every row padded/trimmed to `len(Headers)`; empty trailing rows dropped; cell values are strings; date-styled cells are emitted as ISO-8601 (`2006-01-02`, or `2006-01-02T15:04:05` when a time part exists).
+- Produces in `models.py`: `Sheet(name: str, headers: list[str], rows: list[list[str]])`, `Workbook(sheets: list[Sheet])`, `Issue(sheet: str, column: str, row: int, message: str)` (plain dataclasses for Sheet/Workbook; `Issue` and every later proposal/result model is a pydantic model with `alias_generator=to_camel, populate_by_name=True` so JSON is lowerCamel).
+- Produces in `workbook.py`: `read_workbook(f: IO[bytes]) -> tuple[Workbook, list[Issue]]` — row 1 is the header; every row padded/trimmed to `len(headers)`; trailing empty rows dropped; all values are strings; date/datetime cells are emitted as ISO-8601 (`2025-03-01`, or `2025-03-01T10:30:00` when a time part exists); header issues use `row == 1`.
 
-- [ ] **Step 1: Write failing tests** (build fixture workbooks in the test with `excelize`):
-  - `TestReadWorkbookSheetsAndRows`: two sheets, headers and rows returned in order.
-  - `TestDateCellsBecomeISO`: a cell holding Excel date serial for 2025-03-01 with a date number format reads as `"2025-03-01"`.
-  - `TestBlankHeaderIsIssue`: header `["a","","a"," "]` yields issues for columns 2, 3 (duplicate `a`) and 4 (blank) with `Row == 1`, and those columns are not silently merged.
-  - `TestEmptySheet`: sheet with no cells returns `Headers == nil`, `Rows == nil`, no error.
-- [ ] **Step 2: Run** `go test ./internal/imports -run 'ReadWorkbook|DateCells|BlankHeader|EmptySheet'` — Expected: FAIL.
-- [ ] **Step 3: Implement** `ReadWorkbook` with `excelize.OpenReader`; use `GetRows` with `RawCellValue` and detect date cells via `GetCellStyle`/`GetStyle` number format to convert serials with `excelize.ExcelDateToTime`.
+- [ ] **Step 1: Write failing tests** (build fixture workbooks in the test with `openpyxl`):
+  - `test_sheets_and_rows`: two sheets, headers and rows returned in order.
+  - `test_date_cells_become_iso`: a `datetime.date(2025, 3, 1)` cell reads as `"2025-03-01"`.
+  - `test_blank_and_duplicate_headers_are_issues`: headers `["a", "", "a", " "]` yield issues for columns 2, 3 (duplicate `a`) and 4 (blank) with `row == 1`; no column is silently merged or dropped.
+  - `test_empty_sheet`: a sheet with no cells gives `headers == []` and `rows == []` and no exception.
+- [ ] **Step 2: Run** `python -m pytest api/tests/imports/test_workbook.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** `read_workbook` with `openpyxl.load_workbook(f, read_only=True, data_only=True)`.
 - [ ] **Step 4: Run** same — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: read xlsx workbooks with date normalisation and header checks`.
 
 ### Task 5: Type inference and column profiling
 
 **Files:**
-- Create: `api/internal/imports/infer.go`
-- Test: `api/internal/imports/infer_test.go`
+- Create: `api/app/imports/infer.py`
+- Modify: `api/app/imports/models.py` (add `ColumnProfile`, `TableProfile`)
+- Test: `api/tests/imports/test_infer.py`
 
 **Interfaces:**
-- Consumes: `Sheet` from Task 4.
+- Consumes: `Sheet`.
 - Produces:
-  - `type ColumnProfile struct{ Name, SQLType string; NonNull, Distinct int; Unique bool; Samples []string }`.
-  - `type TableProfile struct{ Name string; Columns []ColumnProfile; RowCount int }`.
-  - `InferColumn(name string, values []string) ColumnProfile` — empty strings count as null; `SQLType` is one of `boolean`, `integer`, `bigint`, `numeric(p,s)`, `date`, `timestamp`, `uuid`, `varchar(n)` (n = longest value, rounded up to 50/255/512), `text` (longer than 512, or no non-null values or mixed types).
-  - `ProfileSheet(s Sheet) TableProfile`.
+  - `ColumnProfile(name: str, sql_type: str, non_null: int, distinct: int, unique: bool, samples: list[str])` (JSON `sqlType`, `nonNull`, ...).
+  - `TableProfile(name: str, columns: list[ColumnProfile], row_count: int)`.
+  - `infer_column(name: str, values: list[str]) -> ColumnProfile` — empty strings count as null; `sql_type` is one of `boolean`, `integer`, `bigint`, `numeric(p,s)`, `date`, `timestamp`, `uuid`, `varchar(n)` (n = 50, 255 or 512, the smallest that fits the longest value), `text` (longer than 512, no non-null values, or no other type fits).
+  - `profile_sheet(sheet: Sheet) -> TableProfile`.
 
-- [ ] **Step 1: Write failing tests:** `TestInferBoolean` (`true/false/TRUE/0/1`-only column is not boolean unless values are `true/false`), `TestInferInteger` (`["1","20"]` → `integer`; `["3000000000"]` → `bigint`), `TestInferNumeric` (`["12.50","3.1"]` → `numeric(4,2)`), `TestInferDateAndTimestamp`, `TestInferUUID`, `TestMixedFallsBackToVarchar` (`["12","abc"]` → `varchar(50)`), `TestLeadingZerosStayText` (`["10110","01234"]` and a 13-digit `["0105536000011"]` → `varchar(50)`, never integer), `TestAllEmptyIsText`, `TestUnique` (`Unique` true only when non-null values are all distinct), `TestProfileHeaderOnlySheet` (zero rows: `RowCount == 0`, every column `text`, no panic).
-- [ ] **Step 2: Run** `go test ./internal/imports -run 'Infer|Mixed|LeadingZeros|AllEmpty|Unique|Profile'` — Expected: FAIL.
-- [ ] **Step 3: Implement** by testing candidate types in order boolean, uuid, integer/bigint, numeric, timestamp, date; any value with a leading zero (and length > 1, not a decimal) rules out numeric types.
+- [ ] **Step 1: Write failing tests:** `test_boolean` (boolean only when every non-null value is `true`/`false`, case-insensitive; `["0","1"]` is `integer`), `test_integer_and_bigint` (`["1","20"]` → `integer`; `["3000000000"]` → `bigint`), `test_numeric` (`["12.50","3.1"]` → `numeric(4,2)`), `test_date_and_timestamp`, `test_uuid`, `test_mixed_falls_back_to_varchar` (`["12","abc"]` → `varchar(50)`), `test_leading_zeros_stay_text` (`["10110","01234"]` and `["0105536000011"]` → `varchar(50)`, never integer), `test_all_empty_is_text`, `test_unique` (`unique` true only when non-null values are all distinct), `test_profile_header_only_sheet` (zero rows: `row_count == 0`, every column `text`, no exception).
+- [ ] **Step 2: Run** `python -m pytest api/tests/imports/test_infer.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** by trying candidate types in order boolean, uuid, integer/bigint, numeric, timestamp, date; a value with a leading zero (length > 1 and not a decimal like `0.5`) rules out the numeric types.
 - [ ] **Step 4: Run** same — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: column type inference and profiling`.
 
 ### Task 6: Key detection
 
 **Files:**
-- Create: `api/internal/imports/keys.go`
-- Test: `api/internal/imports/keys_test.go`
+- Create: `api/app/imports/keys.py`
+- Modify: `api/app/imports/models.py` (add `ForeignKey`, `TableProposal`, `Proposal`)
+- Test: `api/tests/imports/test_keys.py`
 
 **Interfaces:**
 - Consumes: `Workbook`, `TableProfile`.
-- Produces:
-  - `type ForeignKey struct{ Table, Column, RefTable, RefColumn, Source string; Unmatched int; Accepted bool }` (`Source` is `"name"`, `"containment"` or `"dictionary"`).
-  - `type TableProposal struct{ Name string; Columns []ColumnProfile; PrimaryKey []string }`.
-  - `type Proposal struct{ Tables []TableProposal; ForeignKeys []ForeignKey; AddAudit bool }`.
-  - `DetectKeys(wb Workbook, profiles []TableProfile, threshold float64) Proposal` — PK: column named `<table>ID` (case-insensitive), else the single `Unique` column with no nulls, else none. FK: column (not the table's own PK) whose name equals another table's PK column name, or whose non-null values are contained in another table's PK column at a rate >= `threshold` (default use 0.99 from callers). `Unmatched` counts non-null values missing from the referenced key. `Accepted` is true when `Unmatched == 0`.
+- Produces (pydantic, lowerCamel JSON):
+  - `ForeignKey(table: str, column: str, ref_table: str, ref_column: str, source: str, unmatched: int, accepted: bool)` (`source` is `"name"`, `"containment"` or `"dictionary"`).
+  - `TableProposal(name: str, columns: list[ColumnProfile], primary_key: list[str])`.
+  - `Proposal(tables: list[TableProposal], foreign_keys: list[ForeignKey], add_audit: bool = False, schema_only: bool = False)`.
+  - `detect_keys(wb: Workbook, profiles: list[TableProfile], threshold: float = 0.99) -> Proposal` — PK: column named `<table>ID` (case-insensitive), else the single `unique` column with no nulls, else none. FK: a column that is not its table's PK and either has the same name as another table's PK column (`source="name"`), or whose non-null values are contained in another table's PK column at a rate >= `threshold` (`source="containment"`). `unmatched` counts non-null values missing from the referenced key; `accepted` is `unmatched == 0`.
 
-- [ ] **Step 1: Write failing tests:** `TestPrimaryKeyByName` (`sppProject.sppProjectID`), `TestPrimaryKeyBySoleUniqueColumn`, `TestForeignKeyByName` (child column `sppProjectID` matches parent PK `sppProjectID`, `Source == "name"`), `TestForeignKeyByContainment` (child column `sppProject` has a different name but all values are in `sppProject.sppProjectID`, `Source == "containment"`), `TestForeignKeyByContainmentWithOrphans` (2 of 100 values missing at threshold 0.95 → proposed with `Unmatched == 2`, `Accepted == false`), `TestNoKeysForEmptyTable` (header-only sheet yields a table with no PK and no FKs, no panic).
-- [ ] **Step 2: Run** `go test ./internal/imports -run 'PrimaryKey|ForeignKey|NoKeys'` — Expected: FAIL.
-- [ ] **Step 3: Implement** `DetectKeys`; build per-table value sets once.
+- [ ] **Step 1: Write failing tests:** `test_primary_key_by_name` (`sppProject.sppProjectID`), `test_primary_key_by_sole_unique_column`, `test_foreign_key_by_name` (child column `sppProjectID` matches parent PK `sppProjectID`, `source == "name"`), `test_foreign_key_by_containment` (child column `sppProject` has a different name but all values are in `sppProject.sppProjectID`, `source == "containment"`), `test_foreign_key_by_containment_with_orphans` (2 of 100 values missing at threshold 0.95 → proposed with `unmatched == 2`, `accepted == False`), `test_no_keys_for_empty_table` (header-only sheet: no PK, no FKs, no exception).
+- [ ] **Step 2: Run** `python -m pytest api/tests/imports/test_keys.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** `detect_keys`; build each table's value set once.
 - [ ] **Step 4: Run** same — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: primary and foreign key detection`.
 
 ### Task 7: Dictionary mode and validation
 
 **Files:**
-- Create: `api/internal/imports/dictionary.go`
-- Test: `api/internal/imports/dictionary_test.go`, fixture `api/internal/imports/testdata/dict_small.xlsx` (built in test, not committed binary)
+- Create: `api/app/imports/dictionary.py`
+- Test: `api/tests/imports/test_dictionary.py` (fixture workbooks built in the test)
 
 **Interfaces:**
 - Consumes: `Workbook`, `Issue`, `Proposal`, `TableProposal`, `ColumnProfile`, `ForeignKey`.
-- Produces:
-  - `ParseDictionary(wb Workbook) (Proposal, []Issue)` — a sheet is a dictionary sheet when its headers begin `Table`, `Column`; columns read from `Table`, `Column`, `Data type`, and the last note column. Types are normalised to Postgres names (`character varying(255)` → `varchar(255)`, `timestamp with time zone` → `timestamptz`, `double precision`, `numeric(10,2)`, `uuid`, `text`, `boolean`, `date`, `integer`). A note matching `FK → table` or `FK → table.column` yields a `ForeignKey` with `Source: "dictionary"`; when no column is given it references the target table's PK. A column named `<table>ID` is the PK. The standard audit columns found in the dictionary are removed from `Tables` and `AddAudit` is set true.
-  - Validation issues (in the returned `[]Issue`): column name ending `Date` with type `boolean` or `integer`; name starting `is` with a non-boolean type; unparseable type; FK target table or column not in the dictionary. Issue `Message` names the rule.
+- Produces: `parse_dictionary(wb: Workbook) -> tuple[Proposal, list[Issue]]` — a sheet is a dictionary sheet when its headers begin `Table`, `Column`; each row defines one column from `Table`, `Column`, `Data type` and the last note column. Rows with an empty `Table` or `Column` are skipped. Types normalise to Postgres names (`character varying(255)` → `varchar(255)`, `timestamp with time zone` → `timestamptz`, `double precision`, `numeric(10,2)`, `uuid`, `text`, `boolean`, `date`, `integer`, `timestamp without time zone` → `timestamp`). A note matching `FK → table` or `FK → table.column` (the arrow is the character `→`) yields a `ForeignKey` with `source="dictionary"`; when no column is given it references that table's PK. PK of a table: the column named `<table>ID` (case-insensitive), else the first column if its name ends with `ID` and its type is `uuid`. The standard audit columns (`isDelete`, `version`, `createdDate`, `createdBy`, `createdName`, `createdEmployeeCode`, `createdPosition`, `createdDept`, the same five for `updated…` and `deleted…`, plus `updatedDate`, `deletedDate`) are removed from the tables and `add_audit` is set when they were present. The result has `schema_only=True`. Issues (in the returned list, `message` names the rule): a column whose name ends with `Date` and whose type is `boolean` or `integer`; a column whose name starts with `is` and whose type is not `boolean`; an unparseable type; an FK whose target table or column is not in the dictionary — that FK is kept with `accepted=False`.
 
-- [ ] **Step 1: Write failing tests:** `TestParseDictionaryTypesAndPK`, `TestParseDictionaryForeignKeys` (`mtVoltageLevel` note `FK → mtVoltageLevel` references that table's PK), `TestAuditColumnsFoldedIntoFlag`, `TestValidationFlagsBooleanDate` (`documentDate` as `boolean` → one issue), `TestValidationFlagsMissingFKTarget`.
-- [ ] **Step 2: Run** `go test ./internal/imports -run 'Dictionary|Validation|Audit'` — Expected: FAIL.
-- [ ] **Step 3: Implement** per the interface. Dictionary sheets have a shape identical to `docs/data-dict-spp.xlsx`; the real file is used in Task 13's end-to-end check.
+- [ ] **Step 1: Write failing tests:** `test_types_and_primary_key`, `test_foreign_keys` (`FK → mtVoltageLevel` references that table's PK when the table exists), `test_audit_columns_folded_into_flag`, `test_validation_flags_boolean_date` (`documentDate` as `boolean` → one issue), `test_validation_flags_missing_fk_target` (issue, FK kept with `accepted == False`), `test_pk_fallback_first_uuid_id_column` (`addressID` uuid on table `sppProjectAddress`), `test_skips_rows_without_table_or_column`.
+- [ ] **Step 2: Run** `python -m pytest api/tests/imports/test_dictionary.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** per the interface.
 - [ ] **Step 4: Run** same — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: dictionary-driven proposal with validation`.
 
 ### Task 8: DDL generation
 
 **Files:**
-- Create: `api/internal/imports/ddl.go`
-- Test: `api/internal/imports/ddl_test.go`
+- Create: `api/app/imports/ddl.py`
+- Test: `api/tests/imports/test_ddl.py`
 
 **Interfaces:**
 - Consumes: `Proposal`.
-- Produces: `GenerateDDL(p Proposal) (tables []string, order []string, err error)` — `tables` are `CREATE TABLE "spp"."<name>"` statements (quoted identifiers, PK clause, accepted FK constraints inline as `REFERENCES`), `order` is the table names topologically sorted so referenced tables come first; error `cycle detected: a -> b -> a` on FK cycles. When `AddAudit` is true, append the standard audit columns (`isDelete boolean default false`, `version integer default 1`, `createdDate`, `createdBy uuid`, `createdName`, `createdEmployeeCode`, `createdPosition`, `createdDept`, `updatedDate`, `updatedBy uuid`, `updatedName`, `updatedEmployeeCode`, `updatedPosition`, `updatedDept`, `deletedDate`, `deletedBy`, `deletedName`, `deletedEmployeeCode`, `deletedPosition`, `deletedDept`, with the types used in `sppProject` in the data dictionary).
+- Produces: `generate_ddl(p: Proposal) -> tuple[list[str], list[str]]` returning `(statements, order)`: `statements` are `CREATE TABLE "spp"."<name>" (...)` strings in dependency order (quoted identifiers with `"` doubled, PK clause, accepted foreign keys inline as `REFERENCES "spp"."<ref>" ("<col>")`); `order` is the table names in the same order. Raises `DdlError("cycle detected: a -> b -> a")` on foreign-key cycles; a table referencing itself is allowed. When `add_audit` is true, append the standard audit columns: `isDelete boolean default false`, `version integer default 1`, `createdDate timestamptz`, `createdBy uuid`, `createdName varchar(255)`, `createdEmployeeCode varchar(50)`, `createdPosition varchar(255)`, `createdDept varchar(512)`, the same five for `updated…` (`updatedBy uuid`), and for `deleted…` with `deletedBy varchar(50)` and `deletedDate timestamptz`.
 
-- [ ] **Step 1: Write failing tests:** `TestDDLQuotesIdentifiers` (name containing `"` is escaped by doubling), `TestDDLOrdersByDependency`, `TestDDLRejectsCycle`, `TestDDLIncludesOnlyAcceptedForeignKeys`, `TestDDLAuditColumns`.
-- [ ] **Step 2: Run** `go test ./internal/imports -run DDL` — Expected: FAIL.
+- [ ] **Step 1: Write failing tests:** `test_quotes_identifiers` (a name containing `"` is escaped by doubling), `test_orders_by_dependency`, `test_rejects_cycle`, `test_includes_only_accepted_foreign_keys`, `test_audit_columns`, `test_self_reference_allowed`.
+- [ ] **Step 2: Run** `python -m pytest api/tests/imports/test_ddl.py -q` — Expected: FAIL.
 - [ ] **Step 3: Implement** with Kahn's algorithm for ordering.
 - [ ] **Step 4: Run** same — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: generate ordered DDL from a proposal`.
@@ -201,37 +203,39 @@ superset/Dockerfile  superset/superset_config.py  superset/bootstrap.sh
 ### Task 9: Transactional apply
 
 **Files:**
-- Create: `api/internal/imports/apply.go`
-- Test: `api/internal/imports/apply_test.go` (skips without `TEST_DATABASE_URL`)
+- Create: `api/app/imports/apply.py`
+- Modify: `api/app/imports/models.py` (add `ApplyResult`)
+- Test: `api/tests/imports/test_apply.py` (skips without `TEST_DATABASE_URL`)
 
 **Interfaces:**
-- Consumes: `Proposal`, `Workbook`, `GenerateDDL`, `Issue`.
-- Produces: `type ApplyResult struct{ Created, Skipped []string; Issues []Issue }` and `Apply(ctx context.Context, pool *pgxpool.Pool, p Proposal, wb Workbook) (ApplyResult, error)` — one transaction; tables already existing in schema `spp` go to `Skipped` and their data is not loaded; other tables are created and loaded in `order` with `pgx.CopyFrom`; empty strings load as NULL; any value that cannot be converted adds an `Issue{Sheet, Column, Row, Message}`; if there are issues or any error, roll back everything and return them.
+- Consumes: `Proposal`, `Workbook`, `generate_ddl`, `Issue`.
+- Produces: `ApplyResult(created: list[str], skipped: list[str], issues: list[Issue])` (pydantic, lowerCamel) and `apply(pool: ConnectionPool, p: Proposal, wb: Workbook) -> ApplyResult` — one transaction; tables that already exist in schema `spp` go to `skipped` and their data is not loaded; the others are created and, unless `p.schema_only`, loaded in `order` with `COPY`; empty strings load as NULL; every value that cannot be converted to its column type adds `Issue(sheet, column, row, message)` where `row` is the 1-based sheet row including the header; if there are issues, or any database error (including a foreign-key violation), the whole transaction rolls back, nothing is created, and the function returns the issues (conversion problems) or raises (database errors).
 
-- [ ] **Step 1: Write failing tests:** `TestApplyCreatesAndLoads` (two tables with an FK; row counts match; FK constraint exists), `TestApplyRollsBackOnBadValue` (non-numeric in an integer column → issue with sheet, column, row; no table created), `TestApplyRollsBackOnOrphan` (FK violation → error, no tables), `TestReimportSkipsExistingTables` (apply the same workbook twice: second returns `Skipped` with all tables, `Created` empty, row counts unchanged).
-- [ ] **Step 2: Run** `TEST_DATABASE_URL=… go test ./internal/imports -run Apply` — Expected: FAIL.
-- [ ] **Step 3: Implement** `Apply`; parse each string to the column's Go type before `CopyFrom` so conversion failures carry row numbers (row = 1-based sheet row including header).
+- [ ] **Step 1: Write failing tests:** `test_creates_and_loads` (two tables with an FK; row counts match; the FK constraint exists in `information_schema`), `test_rolls_back_on_bad_value` (non-numeric text in an integer column → one issue with sheet, column and row; no table created), `test_rolls_back_on_orphan` (FK violation → exception; no tables), `test_schema_only_creates_without_rows`, `test_reimport_skips_existing_tables` (apply the same workbook twice: second call has all tables in `skipped`, `created == []`, row counts unchanged).
+- [ ] **Step 2: Run** `TEST_DATABASE_URL=… python -m pytest api/tests/imports/test_apply.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** `apply`; convert each string to a Python value by column type before `COPY` so failures carry row numbers.
 - [ ] **Step 4: Run** same — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: transactional apply with rollback report and skip on re-import`.
 
 ### Task 10: Import HTTP endpoints
 
 **Files:**
-- Create: `api/internal/imports/http.go`
-- Modify: `api/cmd/api/main.go` (mount routes under admin auth)
-- Test: `api/internal/imports/http_test.go`
+- Create: `api/app/imports/router.py`, `api/app/migrations/0003_api_create_spp.sql`
+- Modify: `api/app/main.py` (include the router under `admin_auth`)
+- Test: `api/tests/imports/test_router.py` (skips without `TEST_DATABASE_URL`)
 
 **Interfaces:**
 - Consumes: Tasks 3–9.
-- Produces: `NewHandler(pool *pgxpool.Pool, uploadDir string) http.Handler` with routes
-  - `POST /imports` (multipart field `file`, optional `mode=dictionary`): save to `uploadDir/<id>.xlsx`, create `app.import_job` (`uploaded`), build the proposal (dictionary mode → `ParseDictionary`; else `ProfileSheet` + `DetectKeys` threshold 0.99), store it in `proposal`, set `proposed`, respond `201 {id, proposal, issues}`.
-  - `GET /imports/{id}` → `{id, status, proposal, issues, existingTables}`.
-  - `PUT /imports/{id}/proposal` → replace the stored proposal (types, PK, FK `Accepted`, `AddAudit`).
-  - `POST /imports/{id}/apply` → run `Apply`; store issues in `app.import_issue`; status `applied` or `failed`; `200 ApplyResult` or `422` with issues.
+- Produces: `router.build_router(admin: Callable) -> APIRouter` with
+  - `POST /imports` (multipart field `file`, optional form field `mode=dictionary`): save to `<upload_dir>/<id>.xlsx`, create `app.import_job` (`uploaded`), build the proposal (dictionary mode → `parse_dictionary`; otherwise `profile_sheet` per sheet + `detect_keys` with threshold 0.99), store it in `proposal`, set `proposed`, respond `201 {id, proposal, issues}`.
+  - `GET /imports/{id}` → `{id, status, proposal, issues, existingTables}` (`existingTables`: proposal table names that already exist in `spp`); `404` for an unknown id.
+  - `PUT /imports/{id}/proposal` → replaces the stored proposal with the request body (a `Proposal`), `200`.
+  - `POST /imports/{id}/apply` → runs `apply`; stores issues in `app.import_issue`; status `applied` or `failed`; `200 ApplyResult` or `422 {issues}`.
+  - Migration `0003` gives `spp_api` `CREATE` on schema `spp` and sets `ALTER DEFAULT PRIVILEGES FOR ROLE spp_api IN SCHEMA spp GRANT SELECT ON TABLES TO spp_reader` (so Superset can read imported tables).
 
-- [ ] **Step 1: Write failing tests** (httptest, skip without DB): `TestUploadCreatesProposal`, `TestPutProposalPersists`, `TestApplyHappyPath` (tables appear in `spp`), `TestApplyFailureStoresIssues` (`422`, rows in `app.import_issue`, status `failed`), `TestRoutesRequireAuth` (no credentials → 401 on every route).
-- [ ] **Step 2: Run** `TEST_DATABASE_URL=… go test ./internal/imports -run 'Upload|PutProposal|ApplyHappy|ApplyFailure|RoutesRequireAuth'` — Expected: FAIL.
-- [ ] **Step 3: Implement** handlers using Go 1.22 `ServeMux` patterns; mount under `/imports` with `httpx.AdminAuth(cfg.AdminPassword)`; the runtime pool uses `spp_api`, and `Apply` creates tables with it (granted CREATE on schema `spp` in a migration `0003_api_create_spp.up.sql`, revoked outside `Apply` by running DDL only inside the transaction).
+- [ ] **Step 1: Write failing tests** (TestClient, skip without DB): `test_upload_creates_proposal`, `test_put_proposal_persists`, `test_apply_happy_path` (tables appear in `spp`, status `applied`), `test_apply_failure_stores_issues` (`422`, rows in `app.import_issue`, status `failed`), `test_unknown_job_404`, `test_routes_require_auth` (no credentials → 401 on every route; `/healthz` stays open).
+- [ ] **Step 2: Run** `TEST_DATABASE_URL=… python -m pytest api/tests/imports/test_router.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** the router; use `fastapi.UploadFile` and `run_in_threadpool`/sync `def` endpoints (psycopg pool is synchronous); keep the Basic auth dependency from Task 3 on every route.
 - [ ] **Step 4: Run** same — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: import API endpoints`.
 
@@ -265,22 +269,63 @@ superset/Dockerfile  superset/superset_config.py  superset/bootstrap.sh
 - [ ] **Step 4: Run** `docker compose up -d --build && scripts/smoke.sh` — Expected: all sections PASS.
 - [ ] **Step 5: Commit** `feat: superset behind nginx with read-only spp connection`.
 
-### Task 13: End-to-end check and README
+### Task 13: End-to-end check, hardening leftovers and README
 
 **Files:**
-- Create: `README.md`
-- Modify: `scripts/smoke.sh` (section `e2e`)
+- Create: `scripts/e2e.py`, `README.md`
+- Modify: `scripts/smoke.sh` (section `e2e` calls `python3 scripts/e2e.py`), `api/requirements.txt`, `api/requirements-dev.txt`, `api/Dockerfile`, `docs/superpowers/specs/2026-11-02-spp-service-design.md` (section 11 only)
 
 **Interfaces:**
-- Consumes: everything. Produces: documented one-command start and a repeatable end-to-end check.
+- Consumes: everything. Produces: a repeatable end-to-end check that runs against any base URL, pinned dependencies, a non-root API image and the README.
+- `scripts/e2e.py` uses only the Python standard library (urllib, json, uuid, io, zipfile for a minimal xlsx writer if `openpyxl` is missing — otherwise use openpyxl) and reads `E2E_API_BASE` (default `http://localhost/api`), `ADMIN_PASSWORD` (env, or parsed from `.env`), `PSQL_CMD` (optional, same convention as `scripts/smoke.sh`) and exits non-zero with a clear message on the first failed assertion.
 
-- [ ] **Step 1: Add failing e2e check.** `scripts/smoke.sh e2e` uploads `docs/data-dict-spp.xlsx` in dictionary mode, asserts the response lists the validation issues described in spec section 11 (at least the `documentDate` boolean in `sppDocProcExtendScod`), deletes the flagged tables from the proposal via `PUT`, applies, and asserts `spp.sppProject` exists with a foreign key to `sppBusinessPartner`; then queries it as `spp_reader` through Superset's SQL API and as `spp_reader` in `psql` asserting `INSERT` is denied.
-- [ ] **Step 2: Run** `scripts/smoke.sh e2e` — Expected: FAIL until all earlier tasks are in place; then PASS.
-- [ ] **Step 3: Write `README.md`:** prerequisites, `cp .env.example .env`, `docker compose up -d --build`, URLs (`/`, `/superset/`), how to run tests (`go test ./...` with `TEST_DATABASE_URL`, `scripts/smoke.sh`), and the known dictionary issues from spec section 11.
-- [ ] **Step 4: Run** `docker compose down -v && docker compose up -d --build && scripts/smoke.sh` — Expected: all sections PASS.
-- [ ] **Step 5: Commit** `docs: readme and end-to-end smoke check`.
+- [ ] **Step 1: Write the e2e script and make it fail first.** Steps it performs, in order, each with an assertion: (1) `POST /imports` with `docs/data-dict-spp.xlsx` in dictionary mode returns 201, `proposal.schemaOnly` is true, the proposal contains tables `sppProject`, `sppProjectAddition`, `sppProjectConnection`, `sppProjectAddress`, `sppBusinessPartner`, and the issues include the boolean `documentDate` problem of `sppDocProcExtendScod`; (2) `sppProject` has an accepted foreign key to `sppBusinessPartner`; (3) apply the proposal — if `generate_ddl` rejects the full real dictionary (cycles or duplicate columns), the script makes the minimal documented edits through `PUT /imports/{id}/proposal` (for example setting `accepted=false` on a cycle-causing FK or dropping a table) and prints each edit; apply returns 200 and `created` lists the tables; (4) with `PSQL_CMD` set, check `spp."sppProject"` exists, has a foreign key constraint to `sppBusinessPartner`, and `spp_reader` has `SELECT` on it (`has_table_privilege`); (5) applying the same proposal again returns 409 (already applied) and a second upload+apply of the same file reports every table in `skipped`; (6) `POST /loads` with a small data workbook (a `sppProject` sheet listed BEFORE its parent `sppBusinessPartner` sheet, two rows each, only PK/FK/code columns filled) returns 200 with `rowsLoaded` equal to the row counts; (7) the same load again returns 422 with a primary-key violation issue and counts are unchanged; (8) every route returns 401 without credentials and `GET /healthz` is open.
+- [ ] **Step 2: Run it against a locally started API** (no Docker here): start `uvicorn app.main:create_app --factory --port 8081` from `api/` with `DATABASE_URL`/`MIGRATE_DATABASE_URL`/`ADMIN_PASSWORD`/`UPLOAD_DIR` pointing at the local test Postgres, run `E2E_API_BASE=http://localhost:8081 python3 scripts/e2e.py`; paste the real output in the report. Whatever real-dictionary problems it exposes (cycles, DDL errors, misaligned types) are findings: report them precisely.
+- [ ] **Step 3: Wire `smoke.sh e2e`** (and include it in the no-argument run after `web`, before `superset`).
+- [ ] **Step 4: Hardening leftovers.** Pin `api/requirements*.txt` to the exact versions installed and tested here (`pip freeze`-style for the direct dependencies only); make `api/Dockerfile` run as a non-root user with `/data/uploads` created and owned by it (the compose `uploads` volume mounts there).
+- [ ] **Step 5: Write `README.md`:** what it is, prerequisites (Docker only), `cp .env.example .env` + edit secrets, `docker compose up -d --build --wait`, URLs (`/`, `/api/healthz`, `/superset/`), the import flow (dictionary first, then data via "Load data"), how to run tests (`cd api && TEST_DATABASE_URL=… python -m pytest`), `scripts/smoke.sh` sections, notes (role passwords in `.env` only apply on a fresh volume; Superset reads with `spp_reader`; imported tables are owned by `spp_api`), known limitations (job stuck in `applying` after a crash needs a manual `UPDATE`, no user accounts, no Celery) and the known dictionary issues. Update spec section 11: the `mt*` masters ARE defined on the dictionary's `Master` sheet except `mtVoltageLevel` and `mtZone`.
+- [ ] **Step 6: Run** `cd api && python -m pytest -q -W error` (with `TEST_DATABASE_URL`) and `bash -n scripts/smoke.sh` — Expected: PASS. **Commit** `feat: end-to-end check, pinned deps, non-root image and README`.
+
+### Task 14: Load data into existing tables
+
+Closes the gap where a schema created from the dictionary (or an earlier import) could not receive rows. Run order for the remaining work: Tasks 2–10, 12, 14, 13.
+
+**Files:**
+- Modify: `api/app/imports/models.py` (add `rows_loaded: dict[str, int] = {}` to `ApplyResult`), `api/app/imports/apply.py`, `api/app/imports/router.py`, `frontend/index.html`, `scripts/smoke.sh`
+- Test: `api/tests/imports/test_load_existing.py`, `api/tests/imports/test_router.py` (new cases)
+
+**Interfaces:**
+- Consumes: `Workbook`, `Issue`, `ApplyResult`, `ConnectionPool`.
+- Produces: `load_existing(pool: ConnectionPool, wb: Workbook) -> ApplyResult` — for each sheet whose name equals an existing table in schema `spp` (case-sensitive): every header must be a column of that table (unknown header → `Issue`); values are converted by the table's real column types read from `information_schema`; sheets are loaded in foreign-key dependency order read from the catalog (not workbook order); a sheet with no matching table → `Issue("no table named …")`; all-or-nothing in one transaction (issues or a database error such as a primary-key or foreign-key violation roll everything back); result `rows_loaded` maps table name to row count.
+- Router: `POST /loads` (multipart `file`) → `200 ApplyResult` or `422 {issues}`; records an `app.import_job` row (status `applied` or `failed`) and stores issues like the apply endpoint.
+- Frontend: a second small section "Load data into existing tables" with a file picker and a Load button, showing `rowsLoaded` and issues.
+
+- [ ] **Step 1: Write failing tests:** `test_loads_rows_into_existing_table`, `test_unknown_column_is_issue`, `test_unknown_sheet_is_issue`, `test_rolls_back_on_primary_key_conflict` (second load of the same workbook fails, row counts unchanged), `test_loads_in_dependency_order` (child sheet listed before parent still loads), `test_dictionary_then_data_flow` (apply a `schema_only` proposal, then `load_existing` with a data workbook; counts match), `test_loads_endpoint_422_on_issues`, `test_loads_requires_auth`.
+- [ ] **Step 2: Run** `TEST_DATABASE_URL=… python -m pytest api/tests/imports/test_load_existing.py -q` — Expected: FAIL.
+- [ ] **Step 3: Implement** `load_existing`, the endpoint and the frontend section; reuse Task 9's value conversion (extract it to a shared function in `apply.py` rather than duplicating it).
+- [ ] **Step 4: Run** `TEST_DATABASE_URL=… python -m pytest -q` in `api/` — Expected: PASS.
+- [ ] **Step 5: Commit** `feat: load data into existing tables`.
+
+### Task 15: Support unbounded varchar/numeric and jsonb
+
+Found by Task 13's end-to-end run on the real dictionary: 34 columns use `character varying` or `numeric` without a length, or `jsonb`; the parser emits `varchar`, `numeric`, `jsonb` but `generate_ddl` only accepts `varchar(N)`/`numeric(P,S)` and `jsonb` is unknown, so the dictionary cannot be applied without manual edits. Run order: this task runs BEFORE finishing Task 13.
+
+**Files:**
+- Modify: `api/app/imports/ddl.py`, `api/app/imports/apply.py` (`convert_value`), `api/app/imports/load.py` (catalog type mapping), `api/app/imports/dictionary.py` (only if normalisation needs it)
+- Test: `api/tests/imports/test_ddl.py`, `test_apply.py`, `test_load_existing.py`, `test_dictionary.py`
+
+**Interfaces:**
+- Consumes: the existing type allowlist in `ddl.py`, `convert_value(sql_type, text)`, the format_type mapping in `load.py`.
+- Produces: the type strings `varchar` (unbounded), `numeric` (unbounded) and `jsonb` are accepted by `generate_ddl`; `convert_value("varchar", s)` returns `s`; `convert_value("numeric", s)` returns a finite `Decimal` for an ASCII decimal literal of at most 1000 digits (else `ValueError`); `convert_value("jsonb", s)` returns `s` unchanged after checking `json.loads(s)` succeeds (else `ValueError("not valid JSON")`); `load_existing` maps catalog types `character varying`, `numeric`, `jsonb` to them.
+
+- [ ] **Step 1: Write failing tests:** `test_ddl_accepts_unbounded_types` (DDL with `varchar`, `numeric`, `jsonb` columns executes on Postgres in a rolled-back transaction), `test_convert_unbounded_varchar_numeric_jsonb` (valid and invalid values; Thai text in varchar; 1001-digit numeric rejected; `{"a": 1}` accepted, `{bad` rejected; empty string -> None), `test_load_existing_unbounded_columns` (a table created with these types loads rows and reports bad JSON as an Issue with sheet/column/row), `test_real_dictionary_applies_cleanly` (DB test, skips without the file or DB: parse `docs/data-dict-spp.xlsx`, `generate_ddl` succeeds, and `apply` on a clean database creates every table with NO edits).
+- [ ] **Step 2: Run** `TEST_DATABASE_URL=… python -m pytest -q` in `api/` — Expected: FAIL.
+- [ ] **Step 3: Implement** in the files above; keep the allowlist strict (anchored regexes, no other new types); reuse, do not duplicate, helpers.
+- [ ] **Step 4: Run** the full suite — Expected: PASS, output pristine.
+- [ ] **Step 5: Commit** `feat: support unbounded varchar and numeric and jsonb`.
 
 ## Self-Review Notes
 
 - **Spec coverage:** services/routing → Tasks 1, 2, 11, 12; import steps 1–6 → Tasks 4–10; roles → Tasks 1–3, 10; API (`/imports`, `/healthz`) → Tasks 2, 10; testing → every task plus Tasks 11–13; dictionary issues (spec 11) → Tasks 7, 13. `/schema` and `/usecases` endpoints, CRUD for `/projects` and `/partners`, and the view builder are deferred to the next plan (spec part 3); the `mt*` master tables arrive through the dictionary import once their definitions exist.
+- **Added after approval:** backend switched from Go to Python (user request); Task 14 added to cover loading data into tables that already exist.
 - **Type consistency:** `Sheet`, `Workbook`, `Issue` (Task 4), `ColumnProfile`/`TableProfile` (Task 5), `ForeignKey`/`TableProposal`/`Proposal` (Task 6) are reused unchanged in Tasks 7–10.
