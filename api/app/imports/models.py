@@ -27,3 +27,18 @@ class Issue(CamelModel):
     column: str
     row: int
     message: str
+
+
+class ColumnProfile(CamelModel):
+    name: str
+    sql_type: str
+    non_null: int
+    distinct: int
+    unique: bool
+    samples: list[str]
+
+
+class TableProfile(CamelModel):
+    name: str
+    columns: list[ColumnProfile]
+    row_count: int
