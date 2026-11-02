@@ -1,6 +1,7 @@
 """Models of the use case checker (camelCase JSON)."""
 
 import uuid
+from typing import Literal
 from datetime import datetime
 
 from pydantic import ConfigDict
@@ -45,3 +46,25 @@ class QueryResult(CamelModel):
     rows: list[list[object]]
     truncated: bool
     error: str | None = None
+
+
+class Fix(CamelModel):
+    table: str
+    column: str
+    ref_table: str
+    ref_column: str
+
+
+class Evidence(CamelModel):
+    matched: int
+    total: int
+
+
+class Recommendation(CamelModel):
+    code: str
+    severity: Literal["error", "warning", "info"]
+    message: str
+    table: str | None = None
+    field: FieldRef | None = None
+    fix: Fix | None = None
+    evidence: Evidence | None = None
