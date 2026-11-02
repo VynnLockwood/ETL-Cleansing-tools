@@ -94,3 +94,18 @@ def test_profile_header_only_sheet():
 def test_profile_ragged_rows():
     tp = profile_sheet(Sheet(name="T", headers=["a", "b"], rows=[["1"], ["2", "x"]]))
     assert tp.columns[1].non_null == 1
+
+
+def test_thai_digits_stay_text():
+    assert t(["๑๒๓"]) == "varchar(50)"
+    assert t(["๑๐๑๑๐"]) == "varchar(50)"
+
+
+def test_arabic_indic_digits_stay_text():
+    assert t(["١٢٣"]) == "varchar(50)"
+
+
+def test_thai_digits_in_decimal_and_date_stay_text():
+    assert t(["๑.๕"]) == "varchar(50)"
+    assert t(["๒๕๖๘-๐๓-๐๑"]) == "varchar(50)"
+    assert t(["๒๕๖๘-๐๓-๐๑ ๑๐:๐๐:๐๐"]) == "varchar(50)"

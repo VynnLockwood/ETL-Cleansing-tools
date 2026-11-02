@@ -4,14 +4,14 @@ from datetime import datetime
 
 from app.imports.models import ColumnProfile, Sheet, TableProfile
 
-_INT_RE = re.compile(r"-?\d+")
-_DEC_RE = re.compile(r"-?\d+\.\d+")
-_LEADING_ZERO_RE = re.compile(r"-?0\d")
+_INT_RE = re.compile(r"-?[0-9]+")
+_DEC_RE = re.compile(r"-?[0-9]+\.[0-9]+")
+_LEADING_ZERO_RE = re.compile(r"-?0[0-9]")
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
-_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}")
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}")
 
 _INT32_MAX = 2**31 - 1
 _INT64_MAX = 2**63 - 1
