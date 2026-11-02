@@ -228,3 +228,78 @@ def test_wide_numeric_and_midnight_timestamp_load(pool, clean_db):
     wb = Workbook(sheets=[Sheet("w", ["n", "t"], [["1" * 19 + ".1234567890", "2024-01-02"]])])
     r = apply_import(pool, p, wb)
     assert r.issues == [] and r.rows_loaded == {"w": 1}
+
+
+def test_convert_unbounded_varchar_numeric_jsonb():
+    thai = "สวัสดี" * 100
+    assert convert_value("varchar", thai) == thai
+    assert convert_value("varchar", " keep ") == " keep "
+    assert convert_value("varchar", "") is None
+    with pytest.raises(ValueError):
+        convert_value("varchar", "a\x00b")
+
+    assert convert_value("numeric", "12.50") == Decimal("12.50")
+    assert convert_value("numeric", " -3 ") == Decimal("-3")
+    assert convert_value("numeric", "1" * 1000) == Decimal("1" * 1000)
+    assert convert_value("numeric", "") is None
+    for bad in ("1" * 1001, "1." + "1" * 1000, "abc", "NaN", "Infinity", "1e5", "๑๒๓"):
+        with pytest.raises(ValueError):
+            convert_value("numeric", bad)
+
+    assert convert_value("jsonb", '{"a": 1}') == '{"a": 1}'
+    assert convert_value("jsonb", " [1, 2] ") == " [1, 2] "
+    assert convert_value("jsonb", "  ") is None
+    for bad in ("{bad", "NaN", "a\x00b", '"\\u0000"'):
+        with pytest.raises(ValueError):
+            convert_value("jsonb", bad)
+    with pytest.raises(ValueError, match="not valid JSON"):
+        convert_value("jsonb", "{bad")
+
+
+def test_unbounded_types_load_through_apply(pool, clean_db):
+    p = Proposal(tables=[TableProposal(
+        name="u", columns=[col("v", "varchar"), col("n", "numeric"), col("j", "jsonb")],
+        primary_key=[])], foreign_keys=[])
+    wb = Workbook(sheets=[Sheet("u", ["v", "n", "j"], [["สวัสดี", "1.25", '{"a": 1}']])])
+    r = apply_import(pool, p, wb)
+    assert r.issues == [] and r.rows_loaded == {"u": 1}
+    with pool.connection() as conn:
+        assert conn.execute("SELECT v, n, j FROM spp.u").fetchone() == (
+            "สวัสดี", Decimal("1.25"), {"a": 1})
+
+
+def _real_dictionary():
+    from pathlib import Path
+    from app.imports.dictionary import parse_dictionary
+    from app.imports.workbook import read_workbook
+    path = Path(__file__).resolve().parents[3] / "docs" / "data-dict-spp.xlsx"
+    if not path.exists():
+        pytest.skip("real dictionary not available")
+    with path.open("rb") as f:
+        wb, _ = read_workbook(f)
+    return parse_dictionary(wb)[0]
+
+
+def test_real_dictionary_applies_cleanly(clean_db):
+    p = _real_dictionary()
+    assert len(p.tables) == 58
+    names = {t.name for t in p.tables}
+    expected_fks = sum(1 for f in p.foreign_keys
+                       if f.accepted and f.table in names and f.ref_table in names)
+    assert expected_fks > 0
+    db.migrate(clean_db)
+    pool = db.open_pool(clean_db)
+    try:
+        r = apply_import(pool, p, Workbook(sheets=[]))
+    finally:
+        pool.close()
+    assert r.issues == []
+    assert sorted(r.created) == sorted(names)
+    with psycopg.connect(clean_db) as conn:
+        n_tables = conn.execute("SELECT count(*) FROM pg_catalog.pg_tables "
+                                "WHERE schemaname = 'spp'").fetchone()[0]
+        n_fks = conn.execute(
+            "SELECT count(*) FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_namespace n "
+            "ON n.oid = k.connamespace WHERE k.contype = 'f' AND n.nspname = 'spp'").fetchone()[0]
+    assert n_tables == 58
+    assert n_fks == expected_fks

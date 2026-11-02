@@ -156,3 +156,22 @@ def test_generated_ddl_executes_on_postgres(clean_db):
         n = conn.execute("SELECT count(*) FROM information_schema.tables "
                          "WHERE table_schema='spp'").fetchone()[0]
         assert n == 0
+
+
+def test_ddl_accepts_unbounded_types(clean_db):
+    p = prop([table("u", [col("id", "integer"), col("v", "varchar"), col("n", "numeric"),
+                          col("j", "jsonb")], ["id"])])
+    stmts, _ = generate_ddl(p)
+    assert '"v" varchar,' in stmts[0] and '"n" numeric,' in stmts[0] and '"j" jsonb,' in stmts[0]
+    with psycopg.connect(clean_db) as conn:
+        for s in stmts:
+            conn.execute(s)
+        conn.execute("INSERT INTO spp.u VALUES (1, 'x', 1.5, '{\"a\": 1}')")
+        conn.rollback()
+
+
+@pytest.mark.parametrize("typ", ["varchar ", " numeric", "jsonb(1)", "json", "JSONB", "varchar()",
+                                 "numeric()", "varchar(1)x", "xjsonb", "jsonb;"])
+def test_still_rejects_near_miss_types(typ):
+    with pytest.raises(DdlError):
+        generate_ddl(prop([table("a", [col("c", typ)])]))

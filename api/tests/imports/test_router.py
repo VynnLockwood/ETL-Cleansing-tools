@@ -386,3 +386,17 @@ def test_loads_job_not_left_applying_when_recording_fails(client, cfg, monkeypat
         status = conn.execute(
             "SELECT status FROM app.import_job WHERE filename = 'data.xlsx'").fetchone()[0]
     assert status == "failed"
+
+
+def test_put_proposal_accepts_unbounded_types(client):
+    job = upload(client, people_xlsx()).json()
+    proposal = job["proposal"]
+    cols = proposal["tables"][0]["columns"]
+    for c, typ in zip(cols, ["varchar", "numeric"]):
+        c["sqlType"] = typ
+    cols.append({"name": "extra", "sqlType": "jsonb", "nonNull": 0, "distinct": 0,
+                 "unique": False, "samples": []})
+    r = client.put(f"/imports/{job['id']}/proposal", json=proposal)
+    assert r.status_code == 200, r.text
+    got = client.get(f"/imports/{job['id']}").json()["proposal"]["tables"][0]["columns"]
+    assert [c["sqlType"] for c in got] == ["varchar", "numeric", "jsonb"]

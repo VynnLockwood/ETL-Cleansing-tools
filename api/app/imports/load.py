@@ -31,7 +31,8 @@ JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace
 WHERE k.contype = 'f' AND n.nspname = %s AND rn.nspname = %s
 """
 
-_SIMPLE = {"integer", "bigint", "smallint", "boolean", "date", "uuid", "text", "double precision"}
+_SIMPLE = {"integer", "bigint", "smallint", "boolean", "date", "uuid", "text", "double precision",
+           "varchar", "numeric", "jsonb"}
 _PARAM = re.compile(r"(varchar|numeric)\([0-9]+(,[0-9]+)?\)")
 
 

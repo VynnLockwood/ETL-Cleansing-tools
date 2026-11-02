@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import io
 
 import psycopg
@@ -29,7 +31,7 @@ def pool(clean_db):
                      "budget numeric(8,2), opened date, extra text DEFAULT 'dflt')")
         conn.execute("CREATE TABLE spp.emp (id integer PRIMARY KEY, "
                      "dept_id integer NOT NULL REFERENCES spp.dept (id), at timestamptz)")
-        conn.execute("CREATE TABLE spp.blobby (id integer, data jsonb)")
+        conn.execute("CREATE TABLE spp.blobby (id integer, data bytea)")
     yield p
     p.close()
 
@@ -85,7 +87,7 @@ def test_bad_value_reports_row_and_column(pool):
 def test_unsupported_column_type_is_issue(pool):
     r = load_existing(pool, Workbook(sheets=[Sheet("blobby", ["id", "data"], [["1", "{}"]])]))
     assert [(i.sheet, i.column) for i in r.issues] == [("blobby", "data")]
-    assert "jsonb" in r.issues[0].message and count(pool, "blobby") == 0
+    assert "bytea" in r.issues[0].message and count(pool, "blobby") == 0
 
 
 def test_rolls_back_on_primary_key_conflict(pool):
@@ -180,3 +182,21 @@ def test_auto_column_omitted_uses_sequence(auto_pool, table):
 def test_headerless_sheet_with_rows_reports_zero(pool):
     r = load_existing(pool, Workbook(sheets=[Sheet("dept", [], [["1"], ["2"]])]))
     assert r.issues == [] and r.rows_loaded == {"dept": 0} and count(pool, "dept") == 0
+
+
+def test_load_existing_unbounded_columns(pool):
+    with pool.connection() as conn:
+        conn.execute("CREATE TABLE spp.unb (id integer, v varchar, n numeric, j jsonb)")
+    ok = Sheet("unb", ["id", "v", "n", "j"],
+               [["1", "สวัสดี", "12.345678", '{"a": [1, 2]}'], ["2", "", "", ""]])
+    r = load_existing(pool, Workbook(sheets=[ok]))
+    assert r.issues == [] and r.rows_loaded == {"unb": 2}
+    with pool.connection() as conn:
+        rows = conn.execute("SELECT id, v, n, j FROM spp.unb ORDER BY id").fetchall()
+    assert rows[0][1:] == ("สวัสดี", Decimal("12.345678"), {"a": [1, 2]})
+    assert rows[1][1:] == (None, None, None)
+
+    bad = Sheet("unb", ["id", "v", "n", "j"], [["3", "x", "1", "{bad"]])
+    r = load_existing(pool, Workbook(sheets=[bad]))
+    assert [(i.sheet, i.column, i.row, i.message) for i in r.issues] == [
+        ("unb", "j", 2, "not valid JSON")]

@@ -1,5 +1,6 @@
 """Apply an import Proposal to the database in a single transaction."""
 
+import json
 import math
 import re
 import uuid
@@ -20,6 +21,8 @@ _TS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}",
 _NUMERIC_RE = re.compile(r"numeric\(([0-9]+)(?:,([0-9]+))?\)")
 _VARCHAR_RE = re.compile(r"varchar\(([0-9]+)\)")
 
+MAX_UNBOUNDED_DIGITS = 1000
+
 _INT_RANGES = {
     "smallint": 2**15,
     "integer": 2**31,
@@ -29,6 +32,28 @@ _INT_RANGES = {
 
 class _Rollback(Exception):
     """Unwinds the import transaction after conversion issues were collected."""
+
+
+def _json_has_nul(value: object) -> bool:
+    """True if any string or object key in a parsed JSON value contains NUL (jsonb rejects it)."""
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str):
+            if "\x00" in v:
+                return True
+        elif isinstance(v, list):
+            stack.extend(v)
+        elif isinstance(v, dict):
+            for k, item in v.items():
+                if "\x00" in k:
+                    return True
+                stack.append(item)
+    return False
+
+
+def _reject_constant(name: str):
+    raise ValueError(name)  # NaN / Infinity are not JSON
 
 
 def convert_value(sql_type: str, text: str) -> object | None:
@@ -75,6 +100,13 @@ def convert_value(sql_type: str, text: str) -> object | None:
         if int_digits > precision - scale:
             raise ValueError(f"too many digits for {sql_type}")
         return d
+    if sql_type == "numeric":
+        s = text.strip()
+        if not _DEC_RE.fullmatch(s):
+            raise ValueError("expected a number")
+        if sum(ch.isdigit() for ch in s) > MAX_UNBOUNDED_DIGITS:
+            raise ValueError(f"more than {MAX_UNBOUNDED_DIGITS} digits")
+        return Decimal(s)
     if sql_type == "double precision":
         s = text.strip()
         if not _FLOAT_RE.fullmatch(s):
@@ -108,7 +140,15 @@ def convert_value(sql_type: str, text: str) -> object | None:
             raise ValueError("not a valid UUID") from None
     if "\x00" in text:
         raise ValueError("text contains a NUL character")
-    if sql_type == "text":
+    if sql_type in ("text", "varchar"):
+        return text
+    if sql_type == "jsonb":
+        try:
+            value = json.loads(text, parse_constant=_reject_constant)
+        except (ValueError, RecursionError):
+            raise ValueError("not valid JSON") from None
+        if _json_has_nul(value):
+            raise ValueError("not valid JSON")
         return text
     m = _VARCHAR_RE.fullmatch(sql_type)
     if m:

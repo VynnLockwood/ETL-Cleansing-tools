@@ -9,7 +9,7 @@ MAX_IDENT_BYTES = 63
 
 _SQL_TYPE_RE = re.compile(
     r"(boolean|smallint|integer|bigint|text|uuid|date|timestamp|timestamptz"
-    r"|double precision|varchar\([0-9]+\)|numeric\([0-9]+(,[0-9]+)?\))"
+    r"|double precision|jsonb|varchar(\([0-9]+\))?|numeric(\([0-9]+(,[0-9]+)?\))?)"
 )
 
 _ACTOR = (
