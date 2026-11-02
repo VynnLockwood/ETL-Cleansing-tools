@@ -124,3 +124,16 @@ def F(table, column):
     from app.usecases.models import FieldRef
 
     return FieldRef(table=table, column=column)
+
+
+def make_use_case(fields, start=None, name="uc"):
+    import uuid
+    from datetime import datetime, timezone
+
+    from app.usecases.models import UseCase
+
+    now = datetime.now(timezone.utc)
+    return UseCase(
+        id=uuid.uuid4(), name=name, start_table=start, fields=list(fields),
+        created_at=now, updated_at=now,
+    )

@@ -9,7 +9,8 @@ from fastapi.responses import JSONResponse
 from app.imports.models import Issue
 from app.usecases import store
 from app.usecases.graph import load_graph
-from app.usecases.models import UseCase, UseCaseIn
+from app.usecases.check import run_check
+from app.usecases.models import TestResult, UseCase, UseCaseIn
 
 
 def _reader_pool(request: Request):
@@ -99,5 +100,12 @@ def build_router(admin: Callable) -> APIRouter:
         if not store.delete(request.app.state.pool, _uc_id(use_case_id)):
             raise HTTPException(status_code=404, detail="use case not found")
         return Response(status_code=204)
+
+    @router.post("/usecases/{use_case_id}/test", response_model=TestResult)
+    def test_use_case(use_case_id: str, request: Request):
+        uc = store.get(request.app.state.pool, _uc_id(use_case_id))
+        if uc is None:
+            raise HTTPException(status_code=404, detail="use case not found")
+        return run_check(_reader_pool(request), request.app.state.cfg, uc)
 
     return router

@@ -4,7 +4,7 @@ import uuid
 from typing import Literal
 from datetime import datetime
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from app.imports.models import CamelModel
@@ -68,3 +68,42 @@ class Recommendation(CamelModel):
     field: FieldRef | None = None
     fix: Fix | None = None
     evidence: Evidence | None = None
+
+
+class FieldResult(CamelModel):
+    table: str
+    column: str
+    status: Literal["ok", "unreachable", "missing"]
+    query: str | None = None
+    via: list[str] = []
+    reason: str | None = None
+
+
+class ErdNode(CamelModel):
+    table: str
+    role: Literal["start", "reached", "unreachable"]
+    fields: list[str]
+
+
+class ErdEdge(CamelModel):
+    from_: str = Field(alias="from")
+    to: str
+    columns: list[str]
+    status: Literal["fk", "suggested"]
+    cardinality: Literal["many-to-one", "one-to-many", "one-to-one"]
+
+
+class Erd(CamelModel):
+    nodes: list[ErdNode]
+    edges: list[ErdEdge]
+
+
+class TestResult(CamelModel):
+    __test__ = False  # not a pytest test class
+
+    start_table: str
+    start_table_reason: str
+    fields: list[FieldResult]
+    queries: list[QueryResult]
+    recommendations: list[Recommendation]
+    erd: Erd
