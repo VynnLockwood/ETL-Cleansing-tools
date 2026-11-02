@@ -37,6 +37,11 @@ services:
       SPP_OWNER_PASSWORD: ${SPP_OWNER_PASSWORD:?set in .env}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set in .env}
       UPLOAD_DIR: /data/uploads
+      SPP_DB_HOST: postgres
+      SPP_DB_PORT: "5432"
+      SPP_DB_NAME: spp
+      SPP_API_USER: spp_api
+      SPP_OWNER_USER: spp_owner
     volumes:
       - uploads:/data/uploads
     depends_on:
@@ -77,7 +82,7 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "8085:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

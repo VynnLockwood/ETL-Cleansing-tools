@@ -2,6 +2,7 @@ import os
 from urllib.parse import quote
 
 # SUPERSET_APP_ROOT (/superset) is read from the environment by Superset itself.
+SUPERSET_APP_ROOT = os.environ.get("SUPERSET_APP_ROOT", "/superset")
 
 SECRET_KEY = os.environ.get("SUPERSET_SECRET_KEY")
 if not SECRET_KEY:
@@ -19,6 +20,10 @@ SQLALCHEMY_DATABASE_URI = (
 
 # Behind nginx: trust X-Forwarded-* headers.
 ENABLE_PROXY_FIX = True
+
+# Redirect after login to a valid page (welcome doesn't exist in this version)
+LOGIN_REDIRECT_URL = "/superset/"
+SUPERSET_WELCOME_URL = "/superset/"
 
 # Near-live data: 1 second default. Individual datasets/charts can override
 # their own cache timeout. A timeout of 0 means "no caching" only in some
