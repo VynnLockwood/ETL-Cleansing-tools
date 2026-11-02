@@ -34,19 +34,33 @@ class _Rollback(Exception):
     """Unwinds the import transaction after conversion issues were collected."""
 
 
-def _json_has_nul(value: object) -> bool:
-    """True if any string or object key in a parsed JSON value contains NUL (jsonb rejects it)."""
+MAX_JSON_EXPONENT = 100000
+
+
+def _json_text_ok(s: str) -> bool:
+    """jsonb strings and keys must be UTF-8 encodable (no lone surrogates) and free of NUL."""
+    if "\x00" in s:
+        return False
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _json_has_unsupported(value: object) -> bool:
+    """True if a parsed JSON value holds a string or key that jsonb rejects."""
     stack = [value]
     while stack:
         v = stack.pop()
         if isinstance(v, str):
-            if "\x00" in v:
+            if not _json_text_ok(v):
                 return True
         elif isinstance(v, list):
             stack.extend(v)
         elif isinstance(v, dict):
             for k, item in v.items():
-                if "\x00" in k:
+                if not _json_text_ok(k):
                     return True
                 stack.append(item)
     return False
@@ -54,6 +68,14 @@ def _json_has_nul(value: object) -> bool:
 
 def _reject_constant(name: str):
     raise ValueError(name)  # NaN / Infinity are not JSON
+
+
+def _parse_float(literal: str) -> float:
+    """Reject exponents outside Postgres's numeric range without evaluating the literal."""
+    _, sep, exp = literal.lower().partition("e")
+    if sep and abs(int(exp)) > MAX_JSON_EXPONENT:
+        raise ValueError("exponent out of range")
+    return 0.0  # the value itself is never used; the original text is stored
 
 
 def convert_value(sql_type: str, text: str) -> object | None:
@@ -144,10 +166,10 @@ def convert_value(sql_type: str, text: str) -> object | None:
         return text
     if sql_type == "jsonb":
         try:
-            value = json.loads(text, parse_constant=_reject_constant)
+            value = json.loads(text, parse_constant=_reject_constant, parse_float=_parse_float)
         except (ValueError, RecursionError):
             raise ValueError("not valid JSON") from None
-        if _json_has_nul(value):
+        if _json_has_unsupported(value):
             raise ValueError("not valid JSON")
         return text
     m = _VARCHAR_RE.fullmatch(sql_type)

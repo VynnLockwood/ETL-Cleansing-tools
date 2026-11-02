@@ -1,6 +1,5 @@
-from decimal import Decimal
-
 import io
+from decimal import Decimal
 
 import psycopg
 import pytest

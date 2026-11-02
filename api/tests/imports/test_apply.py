@@ -249,11 +249,34 @@ def test_convert_unbounded_varchar_numeric_jsonb():
     assert convert_value("jsonb", '{"a": 1}') == '{"a": 1}'
     assert convert_value("jsonb", " [1, 2] ") == " [1, 2] "
     assert convert_value("jsonb", "  ") is None
-    for bad in ("{bad", "NaN", "a\x00b", '"\\u0000"'):
+    for ok in ('"\\ud83d\\ude00"', '"\U0001F600"', "1e300", "1E-300", "1e100000", "-2.5e+100000"):
+        assert convert_value("jsonb", ok) == ok
+    for bad in ("{bad", "NaN", "a\x00b", '"\\u0000"', '"\\ud800"', '{"\\udc00": 1}',
+                '["ok", "\\ud800x"]', "1e200000", "1E+100001", "[1e-200000]", "1" * 5000):
         with pytest.raises(ValueError):
             convert_value("jsonb", bad)
     with pytest.raises(ValueError, match="not valid JSON"):
         convert_value("jsonb", "{bad")
+
+
+@pytest.mark.parametrize("text", [
+    '{"a": 1}', '"\\ud83d\\ude00"', '"\U0001F600"', "1e300", "1e100000", "-2.5e+100000",
+    '"\\ud800"', '{"\\udc00": 1}', "1e200000", "[1e-200000]", '"\\u0000"', "{bad",
+    "NaN",
+])
+def test_jsonb_validation_matches_postgres(db_url, text):
+    try:
+        convert_value("jsonb", text)
+        ours = True
+    except ValueError:
+        ours = False
+    with psycopg.connect(db_url) as conn:
+        try:
+            conn.execute("SELECT %s::jsonb", (text,))
+            theirs = True
+        except psycopg.Error:
+            theirs = False
+    assert ours == theirs
 
 
 def test_unbounded_types_load_through_apply(pool, clean_db):
