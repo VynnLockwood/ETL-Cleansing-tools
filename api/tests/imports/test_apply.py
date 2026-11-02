@@ -158,6 +158,19 @@ def test_reader_can_select_created_table(pool, clean_db):
         ("bigint", "9223372036854775807", 9223372036854775807),
         ("numeric(5,2)", "123.45", Decimal("123.45")),
         ("numeric(5,2)", "7", Decimal("7")),
+        ("numeric(5,2)", "-0.5", Decimal("-0.5")),
+        ("numeric(5,2)", "999.99", Decimal("999.99")),
+        ("numeric(5,2)", "-999.99", Decimal("-999.99")),
+        ("numeric(5,2)", "1.50", Decimal("1.50")),
+        ("numeric(5,2)", "1.500", Decimal("1.500")),
+        ("numeric(5,2)", "0", Decimal("0")),
+        ("numeric(5)", "99999", Decimal("99999")),
+        ("numeric(30,0)", "1" * 30, Decimal("1" * 30)),
+        ("numeric(29,9)", "12345678901234567890.123456789",
+         Decimal("12345678901234567890.123456789")),
+        ("numeric(38,10)", "1" * 19, Decimal("1" * 19)),
+        ("timestamp", "2024-01-02", __import__("datetime").datetime(2024, 1, 2)),
+        ("timestamptz", "2024-01-02", __import__("datetime").datetime(2024, 1, 2)),
         ("double precision", "1.5", 1.5),
         ("date", "2024-02-29", __import__("datetime").date(2024, 2, 29)),
         ("timestamp", "2024-01-02T03:04:05", __import__("datetime").datetime(2024, 1, 2, 3, 4, 5)),
@@ -183,6 +196,11 @@ def test_convert_value_ok(sql_type, text, expected):
         ("bigint", "9223372036854775808"),
         ("numeric(5,2)", "1234.5"),
         ("numeric(5,2)", "1.234"),
+        ("numeric(5,2)", "1000.00"),
+        ("numeric(5,2)", "1234567"),
+        ("numeric(5,2)", "-1000"),
+        ("numeric(30,0)", "1" * 31),
+        ("numeric(38,10)", "1" * 29),
         ("numeric(5,2)", "abc"),
         ("numeric(5,2)", "NaN"),
         ("double precision", "x"),
@@ -190,7 +208,9 @@ def test_convert_value_ok(sql_type, text, expected):
         ("boolean", "yes"),
         ("date", "2024-02-30"),
         ("date", "01/02/2024"),
-        ("timestamp", "2024-01-02"),
+        ("timestamp", "2024-01-02T03:04"),
+        ("timestamptz", "2024-13-02"),
+        ("timestamp", "๒๐๒๔-๐๑-๐๒"),
         ("uuid", "not-a-uuid"),
         ("varchar(3)", "abcd"),
         ("text", "a\x00b"),
@@ -199,3 +219,12 @@ def test_convert_value_ok(sql_type, text, expected):
 def test_convert_value_rejects(sql_type, text):
     with pytest.raises(ValueError):
         convert_value(sql_type, text)
+
+
+def test_wide_numeric_and_midnight_timestamp_load(pool, clean_db):
+    p = Proposal(tables=[TableProposal(
+        name="w", columns=[col("n", "numeric(38,10)"), col("t", "timestamp")], primary_key=[])],
+        foreign_keys=[])
+    wb = Workbook(sheets=[Sheet("w", ["n", "t"], [["1" * 19 + ".1234567890", "2024-01-02"]])])
+    r = apply_import(pool, p, wb)
+    assert r.issues == [] and r.rows_loaded == {"w": 1}

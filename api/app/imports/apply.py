@@ -59,9 +59,20 @@ def convert_value(sql_type: str, text: str) -> object | None:
         if not _DEC_RE.fullmatch(s):
             raise ValueError("expected a number")
         d = Decimal(s)
-        if d != d.quantize(Decimal(1).scaleb(-scale)):
+        # Inspect digits/exponent: quantize() would hit the 28-digit context limit.
+        _, digits, exp = d.as_tuple()
+        digits = list(digits)
+        while exp < 0 and len(digits) > 1 and digits[-1] == 0:
+            digits.pop()
+            exp += 1
+        if d == 0:
+            frac_digits, int_digits = 0, 0
+        else:
+            frac_digits = max(-exp, 0)
+            int_digits = max(len(digits) + exp, 0)
+        if frac_digits > scale:
             raise ValueError(f"more than {scale} decimal places")
-        if len(str(abs(int(d)))) > precision - scale and int(d) != 0:
+        if int_digits > precision - scale:
             raise ValueError(f"too many digits for {sql_type}")
         return d
     if sql_type == "double precision":
@@ -82,6 +93,8 @@ def convert_value(sql_type: str, text: str) -> object | None:
             raise ValueError("not a valid date") from None
     if sql_type in ("timestamp", "timestamptz"):
         s = text.strip()
+        if _DATE_RE.fullmatch(s):  # Excel midnight values are rendered date-only
+            s += "T00:00:00"
         if not _TS_RE.fullmatch(s):
             raise ValueError("expected a timestamp as YYYY-MM-DDTHH:MM:SS")
         try:
