@@ -4,9 +4,9 @@ from decimal import Decimal
 import psycopg
 import pytest
 from openpyxl import Workbook as XlWorkbook
-from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from app import db
+from conftest import role_dsn as _dsn
 from app.imports.apply import apply as apply_import
 from app.imports.dictionary import parse_dictionary
 from app.imports.load import load_existing
@@ -14,17 +14,10 @@ from app.imports.models import Sheet, Workbook
 from app.imports.workbook import read_workbook
 
 
-def _dsn(owner_url: str, role: str, password: str) -> str:
-    params = conninfo_to_dict(owner_url)
-    params["user"] = role
-    params["password"] = password
-    return make_conninfo(**params)
-
-
 @pytest.fixture
 def pool(clean_db):
     db.migrate(clean_db)
-    p = db.open_pool(_dsn(clean_db, "spp_api", "apipw"))
+    p = db.open_pool(_dsn(clean_db, "spp_api"))
     with p.connection() as conn:
         conn.execute("CREATE TABLE spp.dept (id integer PRIMARY KEY, name varchar(10), "
                      "budget numeric(8,2), opened date, extra text DEFAULT 'dflt')")
@@ -111,7 +104,7 @@ def test_foreign_key_violation_rolls_back_everything(pool):
 
 def test_dictionary_then_data_flow(clean_db):
     db.migrate(clean_db)
-    pool = db.open_pool(_dsn(clean_db, "spp_api", "apipw"))
+    pool = db.open_pool(_dsn(clean_db, "spp_api"))
     try:
         dict_wb = XlWorkbook()
         ws = dict_wb.active

@@ -32,8 +32,9 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://spp_api:${SPP_API_PASSWORD}@postgres:5432/spp
-      MIGRATE_DATABASE_URL: postgresql://spp_owner:${SPP_OWNER_PASSWORD}@postgres:5432/spp
+      # Separate variables (not URLs) so passwords need no URL encoding.
+      SPP_API_PASSWORD: ${SPP_API_PASSWORD:?set in .env}
+      SPP_OWNER_PASSWORD: ${SPP_OWNER_PASSWORD:?set in .env}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set in .env}
       UPLOAD_DIR: /data/uploads
     volumes:

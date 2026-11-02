@@ -1,5 +1,5 @@
 import os
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 # SUPERSET_APP_ROOT (/superset) is read from the environment by Superset itself.
 
@@ -7,9 +7,14 @@ SECRET_KEY = os.environ.get("SUPERSET_SECRET_KEY")
 if not SECRET_KEY:
     raise RuntimeError("SUPERSET_SECRET_KEY must be set")
 
+def userinfo(value: str) -> str:
+    """Percent-encode a URL userinfo component (a space becomes %20, never +)."""
+    return quote(value, safe="")
+
+
 SQLALCHEMY_DATABASE_URI = (
     "postgresql+psycopg2://superset:"
-    f"{quote_plus(os.environ['SUPERSET_DB_PASSWORD'])}@postgres:5432/superset_meta"
+    f"{userinfo(os.environ['SUPERSET_DB_PASSWORD'])}@postgres:5432/superset_meta"
 )
 
 # Behind nginx: trust X-Forwarded-* headers.

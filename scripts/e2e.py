@@ -229,6 +229,9 @@ def main():
         check(code == 401, f"POST {path} without credentials is 401 (got {code})")
     code, res = call("GET", "/healthz", auth=False)
     check(code == 200 and res == {"status": "ok"}, "GET /healthz is open")
+    for path in ("/docs", "/openapi.json"):
+        code, _ = call("GET", path, auth=False)
+        check(code == 404, f"GET {path} is not served (got {code})")
     print("e2e: all checks passed")
 
 

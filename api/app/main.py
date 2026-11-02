@@ -23,7 +23,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         finally:
             pool.close()
 
-    app = FastAPI(title="SPP API", lifespan=lifespan)
+    app = FastAPI(
+        title="SPP API", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+    )
     app.state.cfg = cfg
 
     @app.get("/healthz")

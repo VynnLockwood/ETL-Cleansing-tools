@@ -1,4 +1,5 @@
 import pytest
+from psycopg.conninfo import conninfo_to_dict
 
 from app.config import ConfigError, load_config
 
@@ -26,3 +27,43 @@ def test_load_overrides():
         "ADMIN_PASSWORD": "pw", "UPLOAD_DIR": "/tmp/u",
     })
     assert (cfg.migrate_database_url, cfg.upload_dir) == ("b", "/tmp/u")
+
+
+NASTY = "p/a@s%s:w d#x"
+
+
+def test_components_build_conninfo_with_nasty_passwords():
+    cfg = load_config({
+        "SPP_API_PASSWORD": NASTY, "SPP_OWNER_PASSWORD": NASTY + "2",
+        "ADMIN_PASSWORD": "pw",
+    })
+    api = conninfo_to_dict(cfg.database_url)
+    owner = conninfo_to_dict(cfg.migrate_database_url)
+    assert (api["user"], api["password"]) == ("spp_api", NASTY)
+    assert (owner["user"], owner["password"]) == ("spp_owner", NASTY + "2")
+    assert (api["host"], api["port"], api["dbname"]) == ("postgres", "5432", "spp")
+
+
+def test_component_overrides():
+    cfg = load_config({
+        "SPP_API_PASSWORD": "a", "SPP_OWNER_PASSWORD": "o", "ADMIN_PASSWORD": "pw",
+        "SPP_DB_HOST": "h", "SPP_DB_PORT": "6543", "SPP_DB_NAME": "d",
+        "SPP_API_USER": "u1", "SPP_OWNER_USER": "u2",
+    })
+    assert conninfo_to_dict(cfg.database_url) == {
+        "host": "h", "port": "6543", "dbname": "d", "user": "u1", "password": "a"}
+    assert conninfo_to_dict(cfg.migrate_database_url)["user"] == "u2"
+
+
+def test_database_url_overrides_components():
+    cfg = load_config({
+        "DATABASE_URL": "postgresql://x", "SPP_API_PASSWORD": "a", "ADMIN_PASSWORD": "pw",
+    })
+    assert cfg.database_url == cfg.migrate_database_url == "postgresql://x"
+
+
+def test_components_require_passwords():
+    with pytest.raises(ConfigError):
+        load_config({"SPP_OWNER_PASSWORD": "o", "ADMIN_PASSWORD": "pw"})
+    with pytest.raises(ConfigError):
+        load_config({"SPP_API_PASSWORD": "a", "ADMIN_PASSWORD": "pw"})

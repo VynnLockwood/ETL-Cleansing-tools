@@ -3,22 +3,12 @@ from decimal import Decimal
 import psycopg
 import pytest
 from psycopg import errors
-from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from app import db
+from conftest import role_dsn as _dsn
 from app.imports.apply import convert_value
 from app.imports.apply import apply as apply_import
 from app.imports.models import ColumnProfile, ForeignKey, Proposal, Sheet, TableProposal, Workbook
-
-PASSWORDS = {"spp_api": "apipw", "spp_reader": "readerpw"}
-
-
-def _dsn(owner_url: str, role: str) -> str:
-    params = conninfo_to_dict(owner_url)
-    params["user"] = role
-    params["password"] = PASSWORDS[role]
-    return make_conninfo(**params)
-
 
 def col(name, sql_type, unique=False):
     return ColumnProfile(

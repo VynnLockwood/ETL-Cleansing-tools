@@ -37,7 +37,7 @@ PY
 
 superset init
 
-READER_PW=$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote_plus(os.environ["SPP_READER_PASSWORD"]))')
+READER_PW=$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["SPP_READER_PASSWORD"], safe=""))')
 superset set_database_uri -d SPP \
   -u "postgresql+psycopg2://spp_reader:${READER_PW}@postgres:5432/spp"
 

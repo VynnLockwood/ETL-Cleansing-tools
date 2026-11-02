@@ -3,19 +3,9 @@ import uuid
 import psycopg
 import pytest
 from psycopg import errors
-from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from app import db
-
-ROLE_PASSWORDS = {"spp_api": "apipw", "spp_reader": "readerpw"}
-
-
-def _role_dsn(owner_url: str, role: str) -> str:
-    """Derive a DSN for another role from the owner DSN (same host/port/db)."""
-    params = conninfo_to_dict(owner_url)
-    params["user"] = role
-    params["password"] = ROLE_PASSWORDS[role]
-    return make_conninfo(**params)
+from conftest import role_dsn
 
 
 def test_import_tables_exist(clean_db):
@@ -44,7 +34,7 @@ def test_import_job_status_check(clean_db):
 
 def test_spp_api_can_use_import_tables(clean_db):
     db.migrate(clean_db)
-    with psycopg.connect(_role_dsn(clean_db, "spp_api"), autocommit=True) as conn:
+    with psycopg.connect(role_dsn(clean_db, "spp_api"), autocommit=True) as conn:
         job_id = conn.execute(
             "INSERT INTO app.import_job (filename, status, proposal) "
             "VALUES ('a.xlsx', 'uploaded', '{}') RETURNING id"
@@ -68,7 +58,7 @@ def test_spp_reader_cannot_write_app_or_spp(clean_db):
     db.migrate(clean_db)
     with psycopg.connect(clean_db, autocommit=True) as conn:
         conn.execute("CREATE TABLE spp.probe (id int)")
-    with psycopg.connect(_role_dsn(clean_db, "spp_reader"), autocommit=True) as conn:
+    with psycopg.connect(role_dsn(clean_db, "spp_reader"), autocommit=True) as conn:
         with pytest.raises(errors.InsufficientPrivilege):
             conn.execute("INSERT INTO app.import_job (filename, status) VALUES ('a', 'uploaded')")
         with pytest.raises(errors.InsufficientPrivilege):

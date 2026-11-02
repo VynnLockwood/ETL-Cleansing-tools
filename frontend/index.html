@@ -85,9 +85,16 @@ function api(method, path, body) {
   });
 }
 
-function fail(res, what) {
+function fail(res, what, out) {
+  var d = res.data;
   var detail = res.status === 401 ? "wrong password" : "HTTP " + res.status;
+  if (d && typeof d.detail === "string") detail += ": " + d.detail;
   setStatus(what + " failed: " + detail, true);
+  if (d && d.issues && d.issues.length) {
+    var target = out || $("result");
+    if (target === $("result")) { target.textContent = ""; $("resultSection").hidden = false; }
+    renderIssues(target, d.issues);
+  }
 }
 
 function table(headers, rows) {
@@ -211,7 +218,7 @@ $("load").addEventListener("click", function () {
   out.textContent = "";
   setStatus("Loading...");
   api("POST", "/loads", fd).then(function (res) {
-    if (!res.ok && res.status !== 422) { fail(res, "Load"); return; }
+    if (!res.ok && res.status !== 422) { fail(res, "Load", out); return; }
     var d = res.data || {};
     if (res.ok) {
       setStatus("Loaded.");
