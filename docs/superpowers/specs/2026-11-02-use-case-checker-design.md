@@ -1,7 +1,7 @@
 # Use Case Checker: Design
 
 Date: 2026-11-02
-Status: Draft for review
+Status: Approved; implemented (see docs/superpowers/HANDOFF.md)
 Builds on: `2026-11-02-spp-service-design.md` (this is its part 3, reshaped from the original "use-case ERD and view builder")
 
 ## 1. Purpose

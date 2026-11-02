@@ -218,7 +218,48 @@ def main():
     else:
         print("skip: PSQL_CMD not set, row count check skipped")
 
-    print("== (8) authentication")
+    print("== (8) use case checker")
+    code, tables = call("GET", "/schema/tables")
+    check(code == 200 and len(tables) >= len(table_names) and "sppProject" in {t["name"] for t in tables},
+          f"GET /schema/tables lists the schema ({len(tables) if code == 200 else code} tables)")
+    uc_body = json.dumps({
+        "name": "e2e project detail", "buttonLabel": "Open project", "startTable": "sppProject",
+        "fields": [{"table": "sppProject", "column": "projectCode"},
+                   {"table": "sppBusinessPartner", "column": "taxID"},
+                   {"table": "sppProjectConnection", "column": "egatMainSubstation"},
+                   {"table": "sppProjectAddress", "column": "fullAddress"}],
+    }).encode()
+    code, uc = call("POST", "/usecases", uc_body, "application/json")
+    check(code == 201, f"POST /usecases returns 201 (got {code}: {uc if code != 201 else ''})")
+    try:
+        code, bad = call("POST", "/usecases", json.dumps({"name": "x", "fields": [
+            {"table": "nope", "column": "x"}]}).encode(), "application/json")
+        check(code == 422 and bad["issues"][0]["message"] == "unknown table 'nope'", "unknown table is rejected with 422")
+        code, r = call("POST", f"/usecases/{uc['id']}/test")
+        check(code == 200, f"POST /usecases/{{id}}/test returns 200 (got {code}: {r if code != 200 else ''})")
+        st = {f["table"]: f for f in r["fields"]}
+        check(r["startTable"] == "sppProject", "start table is the one chosen")
+        check(st["sppProject"]["status"] == "ok" and st["sppProject"]["query"] == "main", "sppProject.projectCode ok in the main query")
+        check(st["sppBusinessPartner"]["status"] == "ok" and st["sppBusinessPartner"]["query"] == "main",
+              "sppBusinessPartner.taxID reachable through the foreign key (main query)")
+        check(st["sppProjectConnection"]["status"] == "ok" and st["sppProjectConnection"]["query"].startswith("linked-"),
+              "sppProjectConnection.egatMainSubstation reachable as a linked query (one-to-many)")
+        check(st["sppProjectAddress"]["status"] == "unreachable", "sppProjectAddress.fullAddress is unreachable")
+        check(all(q["error"] is None for q in r["queries"]), "no preview query reports an error")
+        main = next(q for q in r["queries"] if q["id"] == "main")
+        check(len(main["rows"]) >= 1, f"main preview has rows ({len(main['rows'])})")
+        rec = next((x for x in r["recommendations"] if x["code"] == "NO_PATH_KEY_MATCH"), None)
+        check(rec is not None and rec["fix"] == {"table": "sppProjectAddress", "column": "sppProject",
+                                                  "refTable": "sppProject", "refColumn": "sppProjectID"},
+              "recommendation: add key sppProjectAddress.sppProject -> sppProject.sppProjectID")
+        check(any(e["status"] == "suggested" and e["from"] == "sppProjectAddress" for e in r["erd"]["edges"]),
+              "the ERD has the suggested edge")
+        check(any(x["code"] == "FAN_OUT" for x in r["recommendations"]), "FAN_OUT info for the linked query")
+    finally:
+        code, _ = call("DELETE", f"/usecases/{uc['id']}")
+        check(code == 204, f"DELETE /usecases/{{id}} returns 204 (got {code})")
+
+    print("== (9) authentication")
     probe = "00000000-0000-0000-0000-000000000000"
     for method, path in [("GET", f"/imports/{probe}"), ("PUT", f"/imports/{probe}/proposal"),
                          ("POST", f"/imports/{probe}/apply")]:
@@ -227,6 +268,11 @@ def main():
     for path in ("/imports", "/loads"):
         code, _ = upload(path, data, auth=False)
         check(code == 401, f"POST {path} without credentials is 401 (got {code})")
+    for method, path in [("GET", "/schema/tables"), ("GET", "/usecases"), ("POST", "/usecases"),
+                         ("GET", f"/usecases/{probe}"), ("PUT", f"/usecases/{probe}"),
+                         ("DELETE", f"/usecases/{probe}"), ("POST", f"/usecases/{probe}/test")]:
+        code, _ = call(method, path, b"{}" if method in ("POST", "PUT") else None, "application/json", auth=False)
+        check(code == 401, f"{method} {path} without credentials is 401 (got {code})")
     code, res = call("GET", "/healthz", auth=False)
     check(code == 200 and res == {"status": "ok"}, "GET /healthz is open")
     for path in ("/docs", "/openapi.json"):
