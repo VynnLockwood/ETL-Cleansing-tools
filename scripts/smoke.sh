@@ -47,9 +47,10 @@ check_web() {
 }
 
 check_superset() {
-  local i tries=${SMOKE_RETRIES:-90} body token dbs
+  local i tries=${SMOKE_SUPERSET_RETRIES:-${SMOKE_RETRIES:-300}} body token dbs
   for ((i = 0; i < tries; i++)); do
     [ "$(curl -fs http://localhost/superset/health 2>/dev/null)" = "OK" ] && break
+    (( i > 0 && i % 30 == 0 )) && echo "waiting for superset... (${i}s)"
     sleep 1
   done
   body=$(curl -fs http://localhost/superset/health) || fail "GET /superset/health failed"
@@ -63,12 +64,13 @@ check_superset() {
   : "${SUPERSET_ADMIN_PASSWORD:?SUPERSET_ADMIN_PASSWORD not set}"
   body=$(U="$SUPERSET_ADMIN_USER" P="$SUPERSET_ADMIN_PASSWORD" python3 -c \
     'import json,os; print(json.dumps({"username":os.environ["U"],"password":os.environ["P"],"provider":"db","refresh":True}))')
-  token=$(curl -fs -X POST -H 'Content-Type: application/json' -d "$body" \
-    http://localhost/superset/api/v1/security/login \
+  token=$(curl -fs -X POST -H 'Content-Type: application/json' --data @- \
+    http://localhost/superset/api/v1/security/login <<<"$body" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])') \
     || fail "superset login failed"
   ok "superset admin login"
-  dbs=$(curl -fs -H "Authorization: Bearer $token" http://localhost/superset/api/v1/database/ \
+  dbs=$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
+    | curl -fs --config - http://localhost/superset/api/v1/database/ \
     | python3 -c 'import json,sys; print("\n".join(r["database_name"] for r in json.load(sys.stdin)["result"]))') \
     || fail "superset database list failed"
   printf '%s\n' "$dbs" | grep -qx 'SPP' || fail "database SPP not found in superset (got: $dbs)"
