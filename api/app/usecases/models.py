@@ -33,3 +33,15 @@ class UseCase(CamelModel):
     fields: list[FieldRef]
     created_at: datetime
     updated_at: datetime
+
+
+class QueryResult(CamelModel):
+    id: str
+    title: str
+    kind: str
+    merge_key: list[str]
+    sql: str
+    columns: list[str]
+    rows: list[list[object]]
+    truncated: bool
+    error: str | None = None
