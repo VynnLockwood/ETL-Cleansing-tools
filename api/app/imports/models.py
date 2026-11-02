@@ -42,3 +42,26 @@ class TableProfile(CamelModel):
     name: str
     columns: list[ColumnProfile]
     row_count: int
+
+
+class ForeignKey(CamelModel):
+    table: str
+    column: str
+    ref_table: str
+    ref_column: str
+    source: str  # "name" | "containment" | "dictionary"
+    unmatched: int
+    accepted: bool
+
+
+class TableProposal(CamelModel):
+    name: str
+    columns: list[ColumnProfile]
+    primary_key: list[str]
+
+
+class Proposal(CamelModel):
+    tables: list[TableProposal]
+    foreign_keys: list[ForeignKey]
+    add_audit: bool = False
+    schema_only: bool = False
