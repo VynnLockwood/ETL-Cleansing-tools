@@ -127,4 +127,4 @@ To resolve before or during the first import:
 - Unit mismatches: `genContractCapacityW` (described as MW), `distanceToConnectionM` (km), `bessCapacityWh` (MW-hr).
 - `peaConnectionPointA` and `peaConnectionPointB` both map to source column `AU`.
 - `sppProjectAddress` carries a note that a PEA address was put in the plant address column by mistake.
-- The `mt*` master tables referenced by foreign keys are not defined in the dictionary. Their structure and values are needed for the first version.
+- The `mt*` master tables referenced by foreign keys ARE defined on the dictionary's `Master` sheet, except `mtVoltageLevel` and `mtZone`. The foreign keys to those two are left unaccepted in the proposal, and their structure and values are still needed.

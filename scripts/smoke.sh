@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: scripts/smoke.sh [section...]   (default: all sections)
+# Usage: scripts/smoke.sh [section...]   (sections: postgres web e2e superset; default: all)
 # PSQL_CMD overrides how psql is reached, e.g.
 #   PSQL_CMD="psql -h /tmp/pgtest -p 55432 -U postgres -tA" scripts/smoke.sh postgres
 set -u
@@ -77,12 +77,18 @@ check_superset() {
   ok "superset database SPP exists"
 }
 
+check_e2e() {
+  command -v python3 >/dev/null || fail "python3 not found"
+  PSQL_CMD="$PSQL_CMD -d spp" python3 scripts/e2e.py || fail "e2e failed"
+}
+
 sections=("$@")
-[ ${#sections[@]} -eq 0 ] && sections=(postgres web superset)
+[ ${#sections[@]} -eq 0 ] && sections=(postgres web e2e superset)
 for s in "${sections[@]}"; do
   case "$s" in
     postgres) check_postgres ;;
     web) check_web ;;
+    e2e) check_e2e ;;
     superset) check_superset ;;
     *) fail "unknown section $s" ;;
   esac
