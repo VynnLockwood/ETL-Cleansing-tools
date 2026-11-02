@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import JSONResponse
 
 from app.imports.apply import apply as apply_import
+from app.imports.ddl import DdlError, generate_ddl
 from app.imports.dictionary import parse_dictionary
 from app.imports.infer import profile_sheet
 from app.imports.keys import detect_keys
@@ -31,14 +32,14 @@ def _issues_json(issues: list[Issue]) -> list[dict]:
     return [i.model_dump(by_alias=True, mode="json") for i in issues]
 
 
-def _store_issues(conn, job_id: uuid.UUID, issues: list[Issue]) -> None:
+def _store_issues(conn, job_id: uuid.UUID, issues: list[Issue], stage: str = "upload") -> None:
     if not issues:
         return
     with conn.cursor() as cur:
         cur.executemany(
-            'INSERT INTO app.import_issue (job_id, sheet, "column", row, message) '
-            "VALUES (%s, %s, %s, %s, %s)",
-            [(job_id, i.sheet, i.column, i.row, i.message) for i in issues],
+            'INSERT INTO app.import_issue (job_id, sheet, "column", row, message, stage) '
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            [(job_id, i.sheet, i.column, i.row, i.message, stage) for i in issues],
         )
 
 
@@ -49,6 +50,10 @@ def _load_issues(conn, job_id: uuid.UUID) -> list[dict]:
         (job_id,),
     ).fetchall()
     return [{"sheet": r[0], "column": r[1], "row": r[2], "message": r[3]} for r in rows]
+
+
+def _issue(message: str) -> Issue:
+    return Issue(sheet="", column="", row=0, message=message)
 
 
 def _get_job(conn, job_id: uuid.UUID) -> tuple[str, dict | None]:
@@ -133,6 +138,10 @@ def build_router(admin: Callable) -> APIRouter:
     @router.put("/imports/{job_id}/proposal")
     def put_proposal(job_id: str, body: Proposal, request: Request):
         jid = _job_id(job_id)
+        try:
+            generate_ddl(body)
+        except DdlError as e:
+            return JSONResponse(status_code=422, content={"issues": _issues_json([_issue(str(e))])})
         proposal_json = body.model_dump(by_alias=True, mode="json")
         with request.app.state.pool.connection() as conn, conn.transaction():
             status, _ = _get_job(conn, jid)
@@ -150,33 +159,57 @@ def build_router(admin: Callable) -> APIRouter:
     def apply_job(job_id: str, request: Request):
         jid = _job_id(job_id)
         pool = request.app.state.pool
-        with pool.connection() as conn:
-            status, proposal_json = _get_job(conn, jid)
-        if status == "applied":
-            raise HTTPException(status_code=409, detail="Import was already applied")
-        if status not in _EDITABLE or proposal_json is None:
-            raise HTTPException(status_code=409, detail=f"Import is {status}; it cannot be applied")
+        # Atomic claim: only one request can move a job from proposed/failed to applying.
+        with pool.connection() as conn, conn.transaction():
+            claimed = conn.execute(
+                "UPDATE app.import_job SET status = 'applying' "
+                "WHERE id = %s AND status IN ('proposed', 'failed') AND proposal IS NOT NULL "
+                "RETURNING proposal",
+                (jid,),
+            ).fetchone()
+            if claimed is None:
+                status, _ = _get_job(conn, jid)  # 404 if unknown
+                detail = (
+                    "Import was already applied"
+                    if status == "applied"
+                    else f"Import is {status}; it cannot be applied"
+                )
+                raise HTTPException(status_code=409, detail=detail)
+            conn.execute(
+                "DELETE FROM app.import_issue WHERE job_id = %s AND stage = 'apply'", (jid,)
+            )
+        proposal_json = claimed[0]
 
-        proposal = Proposal.model_validate(proposal_json)
         path = Path(request.app.state.cfg.upload_dir) / f"{jid}.xlsx"
+        result = None
         try:
+            proposal = Proposal.model_validate(proposal_json)
             wb, _ = read_workbook(io.BytesIO(path.read_bytes()))
             result = apply_import(pool, proposal, wb)
             issues = result.issues
         except psycopg.Error as e:
-            result = None
-            issues = [Issue(sheet="", column="", row=0, message=str(e).strip() or type(e).__name__)]
+            issues = [_issue(str(e).strip() or type(e).__name__)]
+        except DdlError as e:
+            issues = [_issue(str(e))]
         except OSError:
-            result = None
-            issues = [Issue(sheet="", column="", row=0, message="The uploaded file is missing")]
-
-        with pool.connection() as conn, conn.transaction():
-            if issues or result is None:
-                _store_issues(conn, jid, issues)
+            issues = [_issue("The uploaded file is missing")]
+        except ValueError as e:  # includes pydantic.ValidationError
+            issues = [_issue(f"Invalid proposal: {e}")]
+        except BaseException:
+            # Never leave the job stuck in 'applying' on an unexpected error.
+            with pool.connection() as conn:
                 conn.execute("UPDATE app.import_job SET status = 'failed' WHERE id = %s", (jid,))
-            else:
-                conn.execute("UPDATE app.import_job SET status = 'applied' WHERE id = %s", (jid,))
-        if issues or result is None:
+            raise
+
+        failed = bool(issues) or result is None
+        with pool.connection() as conn, conn.transaction():
+            if failed:
+                _store_issues(conn, jid, issues, stage="apply")
+            conn.execute(
+                "UPDATE app.import_job SET status = %s WHERE id = %s",
+                ("failed" if failed else "applied", jid),
+            )
+        if failed:
             return JSONResponse(status_code=422, content={"issues": _issues_json(issues)})
         return JSONResponse(content=result.model_dump(by_alias=True, mode="json"))
 

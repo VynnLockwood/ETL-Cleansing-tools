@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import uuid
 from pathlib import Path
@@ -196,3 +197,74 @@ def test_routes_require_auth(client):
                       json={"tables": [], "foreignKeys": []}).status_code == 401
     assert client.post(f"/imports/{jid}/apply").status_code == 401
     assert client.get("/healthz").status_code == 200
+
+
+def _stored(cfg, jid):
+    with psycopg.connect(cfg.database_url) as conn:
+        return conn.execute(
+            "SELECT status, proposal FROM app.import_job WHERE id = %s", (jid,)
+        ).fetchone()
+
+
+def test_put_invalid_proposal_is_422_and_not_stored(client, cfg):
+    job = upload(client, people_xlsx()).json()
+    before = _stored(cfg, job["id"])[1]
+    bad = job["proposal"]
+    bad["tables"][0]["columns"][0]["sqlType"] = "money"
+    r = client.put(f"/imports/{job['id']}/proposal", json=bad)
+    assert r.status_code == 422
+    issue = r.json()["issues"][0]
+    assert issue["sheet"] == "" and issue["row"] == 0 and issue["message"]
+    assert _stored(cfg, job["id"])[1] == before
+
+
+def test_apply_with_invalid_stored_proposal_is_422_failed(client, cfg):
+    job = upload(client, people_xlsx()).json()
+    bad = job["proposal"]
+    bad["tables"][0]["columns"][0]["sqlType"] = "money"
+    with psycopg.connect(cfg.database_url, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE app.import_job SET proposal = %s::jsonb WHERE id = %s",
+            (json.dumps(bad), job["id"]),
+        )
+    r = client.post(f"/imports/{job['id']}/apply")
+    assert r.status_code == 422
+    assert r.json()["issues"][0]["message"]
+    assert _stored(cfg, job["id"])[0] == "failed"
+
+
+def test_apply_while_applying_is_409(client, cfg):
+    job = upload(client, people_xlsx()).json()
+    with psycopg.connect(cfg.database_url, autocommit=True) as conn:
+        conn.execute("UPDATE app.import_job SET status = 'applying' WHERE id = %s", (job["id"],))
+    assert client.post(f"/imports/{job['id']}/apply").status_code == 409
+    assert client.put(f"/imports/{job['id']}/proposal", json=job["proposal"]).status_code == 409
+    assert _stored(cfg, job["id"])[0] == "applying"
+
+
+def test_reapply_clears_stale_apply_issues_but_keeps_upload_issues(client, cfg):
+    job = upload(client, make_xlsx({"t": [["id", "v"], [1, "a"]]})).json()
+    with psycopg.connect(cfg.database_url, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO app.import_issue (job_id, sheet, \"column\", row, message) "
+            "VALUES (%s, 't', 'id', 1, 'upload note')",
+            (job["id"],),
+        )
+    job["issues"] = client.get(f"/imports/{job['id']}").json()["issues"]
+    assert len(job["issues"]) == 1
+    proposal = job["proposal"]
+    for c in proposal["tables"][0]["columns"]:
+        if c["name"] == "v":
+            c["sqlType"] = "integer"
+    client.put(f"/imports/{job['id']}/proposal", json=proposal)
+    assert client.post(f"/imports/{job['id']}/apply").status_code == 422
+    assert len(client.get(f"/imports/{job['id']}").json()["issues"]) == len(job["issues"]) + 1
+    for c in proposal["tables"][0]["columns"]:
+        if c["name"] == "v":
+            c["sqlType"] = "text"
+    client.put(f"/imports/{job['id']}/proposal", json=proposal)
+    r = client.post(f"/imports/{job['id']}/apply")
+    assert r.status_code == 200, r.text
+    got = client.get(f"/imports/{job['id']}").json()
+    assert got["status"] == "applied"
+    assert got["issues"] == job["issues"]
