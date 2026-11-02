@@ -11,7 +11,9 @@ from app.imports.ddl import SCHEMA
 from app.imports.models import ApplyResult, Issue, Sheet, Workbook
 
 _COLUMNS_SQL = """
-SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod), a.attgenerated <> ''
+SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod), a.attgenerated <> '',
+       (a.attidentity <> '' OR pg_catalog.pg_get_serial_sequence(
+            format('%%I.%%I', n.nspname, c.relname), a.attname) IS NOT NULL)
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -63,7 +65,7 @@ def _order(names: list[str], edges: set[tuple[str, str]]) -> list[str]:
     return done
 
 
-def _convert(sheet: Sheet, cols: dict[str, tuple[str, bool]], issues: list[Issue]):
+def _convert(sheet: Sheet, cols: dict[str, tuple[str, bool, bool]], issues: list[Issue]):
     """Return (column names, converted rows) for a sheet, appending issues."""
     ok = True
     seen: set[str] = set()
@@ -77,11 +79,15 @@ def _convert(sheet: Sheet, cols: dict[str, tuple[str, bool]], issues: list[Issue
                                 message=f"header is not a column of table '{sheet.name}'"))
             ok = False
         else:
-            pg_type, generated = cols[h]
+            pg_type, generated, auto = cols[h]
             norm = _normalize_type(pg_type)
             if generated:
                 issues.append(Issue(sheet=sheet.name, column=h, row=1,
                                     message="column is generated and cannot be loaded"))
+                ok = False
+            elif auto:
+                issues.append(Issue(sheet=sheet.name, column=h, row=1,
+                                    message=f"column '{h}' is auto-generated; remove it from the sheet"))
                 ok = False
             elif norm is None:
                 issues.append(Issue(sheet=sheet.name, column=h, row=1,
@@ -115,9 +121,9 @@ def load_existing(pool: ConnectionPool, wb: Workbook) -> ApplyResult:
     current = ""
     try:
         with pool.connection() as conn, conn.transaction():
-            tables: dict[str, dict[str, tuple[str, bool]]] = {}
-            for rel, col, typ, generated in conn.execute(_COLUMNS_SQL, (SCHEMA,)):
-                tables.setdefault(rel, {})[col] = (typ, generated)
+            tables: dict[str, dict[str, tuple[str, bool, bool]]] = {}
+            for rel, col, typ, generated, auto in conn.execute(_COLUMNS_SQL, (SCHEMA,)):
+                tables.setdefault(rel, {})[col] = (typ, generated, auto)
             edges = {(c, p) for c, p in conn.execute(_FKS_SQL, (SCHEMA, SCHEMA))}
 
             known = [n for n in sheets if n in tables]
@@ -143,7 +149,7 @@ def load_existing(pool: ConnectionPool, wb: Workbook) -> ApplyResult:
                     with conn.cursor() as cur, cur.copy(query) as copy:
                         for row in rows:
                             copy.write_row(row)
-                rows_loaded[name] = len(rows)
+                rows_loaded[name] = len(rows) if headers else 0
     except psycopg.Error as e:
         return ApplyResult(created=[], skipped=[], issues=[
             Issue(sheet=current, column="", row=0, message=_db_message(e))])

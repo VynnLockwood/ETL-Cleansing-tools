@@ -103,6 +103,26 @@ def _read_upload(data: bytes) -> tuple[Workbook, list[Issue]]:
         ) from None
 
 
+def _finish_job(pool, jid: uuid.UUID, result, issues: list[Issue]) -> JSONResponse:
+    """Record the outcome (never leaving the job 'applying') and build the response."""
+    issues = [_clean_issue(i) for i in issues]
+    failed = bool(issues) or result is None
+    try:
+        with pool.connection() as conn, conn.transaction():
+            if failed:
+                _store_issues(conn, jid, issues, stage="apply")
+            conn.execute(
+                "UPDATE app.import_job SET status = %s WHERE id = %s",
+                ("failed" if failed else "applied", jid),
+            )
+    except BaseException as e:
+        _fail_job(pool, jid, e)
+        raise
+    if failed:
+        return JSONResponse(status_code=422, content={"issues": _issues_json(issues)})
+    return JSONResponse(content=result.model_dump(by_alias=True, mode="json"))
+
+
 def build_router(admin: Callable) -> APIRouter:
     router = APIRouter(dependencies=[Depends(admin)])
 
@@ -229,22 +249,7 @@ def build_router(admin: Callable) -> APIRouter:
             _fail_job(pool, jid, e)
             raise
 
-        issues = [_clean_issue(i) for i in issues]
-        failed = bool(issues) or result is None
-        try:
-            with pool.connection() as conn, conn.transaction():
-                if failed:
-                    _store_issues(conn, jid, issues, stage="apply")
-                conn.execute(
-                    "UPDATE app.import_job SET status = %s WHERE id = %s",
-                    ("failed" if failed else "applied", jid),
-                )
-        except BaseException as e:
-            _fail_job(pool, jid, e)
-            raise
-        if failed:
-            return JSONResponse(status_code=422, content={"issues": _issues_json(issues)})
-        return JSONResponse(content=result.model_dump(by_alias=True, mode="json"))
+        return _finish_job(pool, jid, result, issues)
 
     @router.post("/loads")
     def load_data(request: Request, file: UploadFile = File(...)):
@@ -267,21 +272,6 @@ def build_router(admin: Callable) -> APIRouter:
             _fail_job(pool, jid, e)
             raise
 
-        issues = [_clean_issue(i) for i in issues]
-        failed = bool(issues) or result is None
-        try:
-            with pool.connection() as conn, conn.transaction():
-                if failed:
-                    _store_issues(conn, jid, issues, stage="apply")
-                conn.execute(
-                    "UPDATE app.import_job SET status = %s WHERE id = %s",
-                    ("failed" if failed else "applied", jid),
-                )
-        except BaseException as e:
-            _fail_job(pool, jid, e)
-            raise
-        if failed:
-            return JSONResponse(status_code=422, content={"issues": _issues_json(issues)})
-        return JSONResponse(content=result.model_dump(by_alias=True, mode="json"))
+        return _finish_job(pool, jid, result, issues)
 
     return router
