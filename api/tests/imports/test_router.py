@@ -307,3 +307,82 @@ def test_job_not_left_applying_when_recording_result_fails(client, cfg, monkeypa
     assert [i["message"] for i in got["issues"]] == [
         "could not record the apply result: RuntimeError"
     ]
+
+
+def loads(client, data: bytes, filename="data.xlsx"):
+    return client.post("/loads", files={"file": (filename, data)})
+
+
+def applied_people(client):
+    job = upload(client, people_xlsx()).json()
+    for t in job["proposal"]["tables"]:
+        if t["name"] == "people":
+            t["primaryKey"] = ["id"]
+    assert client.put(f"/imports/{job['id']}/proposal", json=job["proposal"]).status_code == 200
+    assert client.post(f"/imports/{job['id']}/apply").status_code == 200
+
+
+def test_loads_endpoint_loads_rows_and_records_job(client, cfg):
+    applied_people(client)
+    r = loads(client, make_xlsx({"people": [["id", "name"], [4, "Di"], [5, "Ed"]]}))
+    assert r.status_code == 200
+    assert r.json()["rowsLoaded"] == {"people": 2}
+    with psycopg.connect(cfg.database_url) as conn:
+        assert conn.execute("SELECT count(*) FROM spp.people").fetchone()[0] == 5
+        row = conn.execute(
+            "SELECT status, proposal FROM app.import_job WHERE filename = 'data.xlsx'").fetchone()
+    assert row == ("applied", None)
+
+
+def test_loads_endpoint_422_on_issues(client, cfg):
+    applied_people(client)
+    r = loads(client, make_xlsx({"people": [["id", "bogus"], [4, "x"]], "ghost": [["a"], [1]]}))
+    assert r.status_code == 422
+    msgs = {i["message"] for i in r.json()["issues"]}
+    assert "no table named 'ghost' in schema spp" in msgs
+    with psycopg.connect(cfg.database_url) as conn:
+        status = conn.execute(
+            "SELECT status FROM app.import_job WHERE filename = 'data.xlsx'").fetchone()[0]
+        stages = {x[0] for x in conn.execute("SELECT stage FROM app.import_issue")}
+        assert conn.execute("SELECT count(*) FROM spp.people").fetchone()[0] == 3
+    assert status == "failed" and stages == {"apply"}
+
+
+def test_loads_endpoint_422_on_duplicate_key(client):
+    applied_people(client)
+    r = loads(client, make_xlsx({"people": [["id", "name"], [1, "Again"]]}))
+    assert r.status_code == 422
+    assert "duplicate key" in r.json()["issues"][0]["message"]
+
+
+def test_loads_rejects_empty_and_corrupt_files(client):
+    assert loads(client, b"").status_code == 400
+    assert loads(client, b"not an xlsx").status_code == 400
+
+
+def test_loads_requires_auth(client):
+    client.auth = None
+    assert client.post("/loads", files={"file": ("a.xlsx", b"x")}).status_code == 401
+
+
+def test_loads_job_not_left_applying_when_recording_fails(client, cfg, monkeypatch):
+    from app.imports import router
+    from app.imports.models import ApplyResult, Issue
+
+    applied_people(client)
+
+    def boom(*a, **k):
+        raise RuntimeError("cannot record")
+
+    monkeypatch.setattr(
+        router, "load_existing",
+        lambda pool, wb: ApplyResult(created=[], skipped=[], issues=[Issue(sheet="a", column="", row=0, message="m")]),
+    )
+    monkeypatch.setattr(router, "_store_issues", boom)
+    with pytest.raises(RuntimeError, match="cannot record"):
+        loads(client, make_xlsx({"people": [["id"], [9]]}))
+    monkeypatch.undo()
+    with psycopg.connect(cfg.database_url) as conn:
+        status = conn.execute(
+            "SELECT status FROM app.import_job WHERE filename = 'data.xlsx'").fetchone()[0]
+    assert status == "failed"

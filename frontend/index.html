@@ -40,6 +40,14 @@
   <div id="result"></div>
 </section>
 
+<fieldset>
+  <legend>Load data into existing tables</legend>
+  <p>Each sheet is loaded into the table of the same name. Nothing is loaded if any row is rejected.</p>
+  <p><input type="file" id="loadFile" accept=".xlsx,.xls"></p>
+  <button type="button" id="load">Load</button>
+  <div id="loadResult"></div>
+</fieldset>
+
 <script>
 "use strict";
 var state = { id: null, proposal: null };
@@ -192,6 +200,29 @@ $("apply").addEventListener("click", function () {
       $("resultSection").hidden = false;
     });
   }).catch(function (e) { setStatus("Apply failed: " + e.message, true); });
+});
+
+$("load").addEventListener("click", function () {
+  var f = $("loadFile").files[0];
+  if (!f) { setStatus("Choose a file to load first.", true); return; }
+  var fd = new FormData();
+  fd.append("file", f);
+  var out = $("loadResult");
+  out.textContent = "";
+  setStatus("Loading...");
+  api("POST", "/loads", fd).then(function (res) {
+    if (!res.ok && res.status !== 422) { fail(res, "Load"); return; }
+    var d = res.data || {};
+    if (res.ok) {
+      setStatus("Loaded.");
+      var counts = d.rowsLoaded || {};
+      out.appendChild(table(["Table", "Rows loaded"],
+        Object.keys(counts).map(function (k) { return [k, counts[k]]; })));
+    } else {
+      setStatus("Load rejected: nothing was loaded. Fix the issues below.", true);
+    }
+    renderIssues(out, d.issues);
+  }).catch(function (e) { setStatus("Load failed: " + e.message, true); });
 });
 </script>
 </body>

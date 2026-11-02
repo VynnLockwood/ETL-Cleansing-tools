@@ -16,7 +16,8 @@ from app.imports.ddl import DdlError, generate_ddl
 from app.imports.dictionary import parse_dictionary
 from app.imports.infer import profile_sheet
 from app.imports.keys import detect_keys
-from app.imports.models import Issue, Proposal
+from app.imports.load import load_existing
+from app.imports.models import Issue, Proposal, Workbook
 from app.imports.workbook import read_workbook
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,18 @@ def _get_job(conn, job_id: uuid.UUID) -> tuple[str, dict | None]:
     return row[0], row[1]
 
 
+def _read_upload(data: bytes) -> tuple[Workbook, list[Issue]]:
+    if not data:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty")
+    try:
+        return read_workbook(io.BytesIO(data))
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded file is not a readable .xlsx workbook",
+        ) from None
+
+
 def build_router(admin: Callable) -> APIRouter:
     router = APIRouter(dependencies=[Depends(admin)])
 
@@ -100,15 +113,7 @@ def build_router(admin: Callable) -> APIRouter:
         mode: str = Form(""),
     ):
         data = file.file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="The uploaded file is empty")
-        try:
-            wb, issues = read_workbook(io.BytesIO(data))
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail="The uploaded file is not a readable .xlsx workbook",
-            ) from None
+        wb, issues = _read_upload(data)
         if mode == "dictionary":
             proposal, dict_issues = parse_dictionary(wb)
             issues = issues + dict_issues
@@ -220,6 +225,44 @@ def build_router(admin: Callable) -> APIRouter:
             issues = [_issue("The uploaded file is missing")]
         except ValueError as e:  # includes pydantic.ValidationError
             issues = [_issue(f"Invalid proposal: {e}")]
+        except BaseException as e:
+            _fail_job(pool, jid, e)
+            raise
+
+        issues = [_clean_issue(i) for i in issues]
+        failed = bool(issues) or result is None
+        try:
+            with pool.connection() as conn, conn.transaction():
+                if failed:
+                    _store_issues(conn, jid, issues, stage="apply")
+                conn.execute(
+                    "UPDATE app.import_job SET status = %s WHERE id = %s",
+                    ("failed" if failed else "applied", jid),
+                )
+        except BaseException as e:
+            _fail_job(pool, jid, e)
+            raise
+        if failed:
+            return JSONResponse(status_code=422, content={"issues": _issues_json(issues)})
+        return JSONResponse(content=result.model_dump(by_alias=True, mode="json"))
+
+    @router.post("/loads")
+    def load_data(request: Request, file: UploadFile = File(...)):
+        wb, _ = _read_upload(file.file.read())
+        pool = request.app.state.pool
+        jid = uuid.uuid4()
+        with pool.connection() as conn, conn.transaction():
+            conn.execute(
+                "INSERT INTO app.import_job (id, filename, status, proposal) "
+                "VALUES (%s, %s, 'applying', NULL)",
+                (jid, file.filename),
+            )
+        result = None
+        try:
+            result = load_existing(pool, wb)
+            issues = result.issues
+        except psycopg.Error as e:
+            issues = [_issue(str(e).strip() or type(e).__name__)]
         except BaseException as e:
             _fail_job(pool, jid, e)
             raise
