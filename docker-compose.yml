@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      SPP_OWNER_PASSWORD: ${SPP_OWNER_PASSWORD:?set in .env}
+      SPP_API_PASSWORD: ${SPP_API_PASSWORD:?set in .env}
+      SPP_READER_PASSWORD: ${SPP_READER_PASSWORD:?set in .env}
+      SUPERSET_DB_PASSWORD: ${SUPERSET_DB_PASSWORD:?set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:
