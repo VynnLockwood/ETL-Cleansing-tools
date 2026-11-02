@@ -46,12 +46,42 @@ check_web() {
   ok "unauthenticated /api/imports is 401"
 }
 
+check_superset() {
+  local i tries=${SMOKE_RETRIES:-90} body token dbs
+  for ((i = 0; i < tries; i++)); do
+    [ "$(curl -fs http://localhost/superset/health 2>/dev/null)" = "OK" ] && break
+    sleep 1
+  done
+  body=$(curl -fs http://localhost/superset/health) || fail "GET /superset/health failed"
+  [ "$body" = "OK" ] || fail "superset health body: $body"
+  ok "GET /superset/health"
+
+  if [ -f .env ]; then
+    set -a; . ./.env; set +a
+  fi
+  : "${SUPERSET_ADMIN_USER:?SUPERSET_ADMIN_USER not set}"
+  : "${SUPERSET_ADMIN_PASSWORD:?SUPERSET_ADMIN_PASSWORD not set}"
+  body=$(U="$SUPERSET_ADMIN_USER" P="$SUPERSET_ADMIN_PASSWORD" python3 -c \
+    'import json,os; print(json.dumps({"username":os.environ["U"],"password":os.environ["P"],"provider":"db","refresh":True}))')
+  token=$(curl -fs -X POST -H 'Content-Type: application/json' -d "$body" \
+    http://localhost/superset/api/v1/security/login \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])') \
+    || fail "superset login failed"
+  ok "superset admin login"
+  dbs=$(curl -fs -H "Authorization: Bearer $token" http://localhost/superset/api/v1/database/ \
+    | python3 -c 'import json,sys; print("\n".join(r["database_name"] for r in json.load(sys.stdin)["result"]))') \
+    || fail "superset database list failed"
+  printf '%s\n' "$dbs" | grep -qx 'SPP' || fail "database SPP not found in superset (got: $dbs)"
+  ok "superset database SPP exists"
+}
+
 sections=("$@")
-[ ${#sections[@]} -eq 0 ] && sections=(postgres)
+[ ${#sections[@]} -eq 0 ] && sections=(postgres web superset)
 for s in "${sections[@]}"; do
   case "$s" in
     postgres) check_postgres ;;
     web) check_web ;;
+    superset) check_superset ;;
     *) fail "unknown section $s" ;;
   esac
 done
