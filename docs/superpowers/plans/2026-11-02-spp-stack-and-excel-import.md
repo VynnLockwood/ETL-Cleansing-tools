@@ -306,6 +306,24 @@ Closes the gap where a schema created from the dictionary (or an earlier import)
 - [ ] **Step 4: Run** `TEST_DATABASE_URL=… python -m pytest -q` in `api/` — Expected: PASS.
 - [ ] **Step 5: Commit** `feat: load data into existing tables`.
 
+### Task 15: Support unbounded varchar/numeric and jsonb
+
+Found by Task 13's end-to-end run on the real dictionary: 34 columns use `character varying` or `numeric` without a length, or `jsonb`; the parser emits `varchar`, `numeric`, `jsonb` but `generate_ddl` only accepts `varchar(N)`/`numeric(P,S)` and `jsonb` is unknown, so the dictionary cannot be applied without manual edits. Run order: this task runs BEFORE finishing Task 13.
+
+**Files:**
+- Modify: `api/app/imports/ddl.py`, `api/app/imports/apply.py` (`convert_value`), `api/app/imports/load.py` (catalog type mapping), `api/app/imports/dictionary.py` (only if normalisation needs it)
+- Test: `api/tests/imports/test_ddl.py`, `test_apply.py`, `test_load_existing.py`, `test_dictionary.py`
+
+**Interfaces:**
+- Consumes: the existing type allowlist in `ddl.py`, `convert_value(sql_type, text)`, the format_type mapping in `load.py`.
+- Produces: the type strings `varchar` (unbounded), `numeric` (unbounded) and `jsonb` are accepted by `generate_ddl`; `convert_value("varchar", s)` returns `s`; `convert_value("numeric", s)` returns a finite `Decimal` for an ASCII decimal literal of at most 1000 digits (else `ValueError`); `convert_value("jsonb", s)` returns `s` unchanged after checking `json.loads(s)` succeeds (else `ValueError("not valid JSON")`); `load_existing` maps catalog types `character varying`, `numeric`, `jsonb` to them.
+
+- [ ] **Step 1: Write failing tests:** `test_ddl_accepts_unbounded_types` (DDL with `varchar`, `numeric`, `jsonb` columns executes on Postgres in a rolled-back transaction), `test_convert_unbounded_varchar_numeric_jsonb` (valid and invalid values; Thai text in varchar; 1001-digit numeric rejected; `{"a": 1}` accepted, `{bad` rejected; empty string -> None), `test_load_existing_unbounded_columns` (a table created with these types loads rows and reports bad JSON as an Issue with sheet/column/row), `test_real_dictionary_applies_cleanly` (DB test, skips without the file or DB: parse `docs/data-dict-spp.xlsx`, `generate_ddl` succeeds, and `apply` on a clean database creates every table with NO edits).
+- [ ] **Step 2: Run** `TEST_DATABASE_URL=… python -m pytest -q` in `api/` — Expected: FAIL.
+- [ ] **Step 3: Implement** in the files above; keep the allowlist strict (anchored regexes, no other new types); reuse, do not duplicate, helpers.
+- [ ] **Step 4: Run** the full suite — Expected: PASS, output pristine.
+- [ ] **Step 5: Commit** `feat: support unbounded varchar and numeric and jsonb`.
+
 ## Self-Review Notes
 
 - **Spec coverage:** services/routing → Tasks 1, 2, 11, 12; import steps 1–6 → Tasks 4–10; roles → Tasks 1–3, 10; API (`/imports`, `/healthz`) → Tasks 2, 10; testing → every task plus Tasks 11–13; dictionary issues (spec 11) → Tasks 7, 13. `/schema` and `/usecases` endpoints, CRUD for `/projects` and `/partners`, and the view builder are deferred to the next plan (spec part 3); the `mt*` master tables arrive through the dictionary import once their definitions exist.
