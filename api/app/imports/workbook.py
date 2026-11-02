@@ -29,7 +29,10 @@ def _read_sheet(name: str, raw_rows: list[tuple]) -> tuple[Sheet, list[Issue]]:
     # drop trailing fully-empty rows
     while rows and not any(c != "" for c in rows[-1]):
         rows.pop()
-    header_row = [_cell(v) for v in raw_rows[0]]
+    if not rows:
+        return Sheet(name=name), []
+    max_width = max(len(r) for r in rows)
+    header_row = rows[0] + [""] * (max_width - len(rows[0]))
     data = rows[1:]
     # trim trailing columns that are completely empty (no header, no data)
     width = len(header_row)
@@ -54,13 +57,19 @@ def _read_sheet(name: str, raw_rows: list[tuple]) -> tuple[Sheet, list[Issue]]:
     return Sheet(name=name, headers=headers, rows=rows_out), issues
 
 
+def _raw_rows(ws) -> list[tuple]:
+    # Ignore the declared <dimension>: some exporters write ref="A1" or omit it.
+    ws.reset_dimensions()
+    return list(ws.iter_rows(values_only=True))
+
+
 def read_workbook(f: IO[bytes]) -> tuple[Workbook, list[Issue]]:
     wb = load_workbook(f, read_only=True, data_only=True)
     try:
         sheets: list[Sheet] = []
         issues: list[Issue] = []
         for ws in wb.worksheets:
-            sheet, sheet_issues = _read_sheet(ws.title, list(ws.iter_rows(values_only=True)))
+            sheet, sheet_issues = _read_sheet(ws.title, _raw_rows(ws))
             sheets.append(sheet)
             issues.extend(sheet_issues)
         return Workbook(sheets=sheets), issues

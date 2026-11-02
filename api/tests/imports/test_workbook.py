@@ -93,3 +93,24 @@ def test_thai_text_and_leading_zeros_preserved():
     f = _single([["name", "code"], ["สวัสดี", "0105536000011"]])
     book, _ = read_workbook(f)
     assert book.sheets[0].rows == [["สวัสดี", "0105536000011"]]
+
+
+def test_wrong_declared_dimension_does_not_drop_data():
+    import re
+    import zipfile
+
+    src = _single([["a", "b", "c"], ["1", "2", "3"]])
+    out = io.BytesIO()
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                text = data.decode("utf-8")
+                assert "<dimension" in text
+                data = re.sub(r'<dimension ref="[^"]*"', '<dimension ref="A1"', text).encode("utf-8")
+            zout.writestr(item, data)
+    out.seek(0)
+    book, issues = read_workbook(out)
+    assert book.sheets[0].headers == ["a", "b", "c"]
+    assert book.sheets[0].rows == [["1", "2", "3"]]
+    assert issues == []
