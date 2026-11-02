@@ -57,8 +57,9 @@ def detect_keys(
             vals = values[p.name].get(col.name, [])
             if not vals:
                 continue
-            found: list[ForeignKey] = []
-            for ref in profiles:
+            # (rank key, ForeignKey-without-accepted data); lower rank sorts first.
+            found: list[tuple[tuple, ForeignKey, bool]] = []
+            for order, ref in enumerate(profiles):
                 if ref.name == p.name or ref.name not in pk_sets:
                     continue
                 ref_col = pks[ref.name][0]
@@ -71,21 +72,30 @@ def detect_keys(
                 by_containment = matched / len(vals) >= threshold
                 if not (by_name or by_containment):
                     continue
+                named = ref.name.lower() in col.name.lower()
                 found.append(
-                    ForeignKey(
-                        table=p.name,
-                        column=col.name,
-                        ref_table=ref.name,
-                        ref_column=ref_col,
-                        source="name" if by_name else "containment",
-                        unmatched=unmatched,
-                        accepted=unmatched == 0,
+                    (
+                        (0 if by_name else 1, -matched / len(vals), unmatched),
+                        ForeignKey(
+                            table=p.name,
+                            column=col.name,
+                            ref_table=ref.name,
+                            ref_column=ref_col,
+                            source="name" if by_name else "containment",
+                            unmatched=unmatched,
+                            accepted=False,
+                        ),
+                        by_name or named,
                     )
                 )
-            # A name match is a stronger signal than coincidental value overlap.
-            if any(f.source == "name" for f in found):
-                found = [f for f in found if f.source == "name"]
-            fks.extend(found)
+            if not found:
+                continue
+            # Stable sort keeps profile order as the final tie-breaker.
+            found.sort(key=lambda f: f[0])
+            _, best, corroborated = found[0]
+            ambiguous = len(found) > 1 and found[0][0] == found[1][0]
+            best.accepted = best.unmatched == 0 and corroborated and not ambiguous
+            fks.append(best)
 
     tables = [
         TableProposal(name=p.name, columns=p.columns, primary_key=pks[p.name])
