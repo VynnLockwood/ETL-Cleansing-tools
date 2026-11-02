@@ -3,7 +3,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from . import db
+from .auth import admin_auth
 from .config import Config, load_config
+from .imports.router import build_router
 
 
 def create_app(cfg: Config | None = None) -> FastAPI:
@@ -27,5 +29,7 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    app.include_router(build_router(admin_auth(cfg.admin_password)))
 
     return app
