@@ -1,11 +1,8 @@
-FROM golang:1.26 AS build
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
-
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build /out/api /api
-USER nonroot
-ENTRYPOINT ["/api"]
+FROM python:3.12-slim
+WORKDIR /srv
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+EXPOSE 8080
+CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]

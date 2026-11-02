@@ -36,7 +36,6 @@ services:
       MIGRATE_DATABASE_URL: postgresql://spp_owner:${SPP_OWNER_PASSWORD}@postgres:5432/spp
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set in .env}
       UPLOAD_DIR: /data/uploads
-      ADDR: ":8080"
     volumes:
       - uploads:/data/uploads
     depends_on:
