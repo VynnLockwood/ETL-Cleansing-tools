@@ -1,7 +1,7 @@
 # SPP Database Service: Design
 
 Date: 2026-11-02
-Status: Approved; implemented (see docs/superpowers/HANDOFF.md)
+Status: Approved. Parts 1–2 (stack, Excel import, load into existing tables) are implemented, see docs/superpowers/HANDOFF.md; part 3 (use-case ERD and view builder) is not started.
 
 ## 1. Purpose
 

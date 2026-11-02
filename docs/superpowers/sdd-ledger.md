@@ -104,3 +104,4 @@ Task 15: complete (commits ae538c5..b503817, review clean after 1 fix round)
 Task 13: minor (deferred): KeyError on malformed 422 bodies in e2e; .env parser ignores `export` and inline comments; psycopg-binary pinned only transitively; e2e script could add -d spp itself; route coverage for step 8 is 5 routes (confirm no other authenticated routes)
 Task 13: fix round 1/5 (1 addressed pending re-review — e2e re-runnable; commits b6e85c0..0ff12c3)
 Task 13: complete (commits b503817..0ff12c3, review clean after 1 fix round)
+Task 15/final: final whole-branch review done (no Critical; Important 1-5 fixed in commits 21468c8, 1ab50f8; scoped re-review clean). Remaining deferred minors are listed in docs/superpowers/HANDOFF.md.
