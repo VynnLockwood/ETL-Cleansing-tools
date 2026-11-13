@@ -112,3 +112,7 @@ The e2e check can be re-run on the same stack: it applies the dictionary (tables
 - Misaligned columns: in `sppCaseConnectGenerator`, `sppCaseConnectGenConnection` and `sppCaseConnectGenInspectGen` the type cell holds a Thai description, or is empty, so the type falls back to `text`. Several `isDelete`/`*Date` columns have a type that does not match their name (for example `documentDate` is boolean in `sppDocProcExtendScod`).
 - Foreign keys to `mtVoltageLevel` and `mtZone` point at tables the dictionary does not define; they are left unaccepted.
 - Unit mismatches in the descriptions (`genContractCapacityW` described as MW, `distanceToConnectionM` as km, `bessCapacityWh` as MW-hr), `peaConnectionPointA`/`B` both mapped to source column `AU`, and a PEA address placed in the plant address column of `sppProjectAddress`.
+
+## License
+
+[MIT](LICENSE)
